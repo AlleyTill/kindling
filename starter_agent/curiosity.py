@@ -1,0 +1,122 @@
+"""Curiosity (plan section 6, Lyra's design): notice the questions the agent raised and didn't answer.
+
+- Once per session, when it ends: one model call reads the agent's OWN turns from that session.
+- Every question must quote 2 to 20 words found word for word in the turn it cites, or it is dropped.
+- A question too close (similarity 0.85) to an open OR dropped one is skipped, so a question you
+  turned down doesn't come back next week in new words.
+- At most 20 open questions: the oldest open one is marked `expired`, never deleted.
+- No outside search, and no model call anywhere else. It never talks to you on its own.
+- `curious list`, `curious drop ID`, `curious adopt ID`. Only adopt turns a question into a desire,
+  unless you switch on auto_adopt in agent.json (off by default).
+"""
+import json
+
+from . import bdi
+from .embed import cosine
+from .models import parse_json, split_json
+
+SYSTEM = """You are reading your own turns from one finished session. List the questions you raised \
+there and did not answer later in the same session. Do not invent questions you did not raise.
+Return only JSON: {"questions": [{"text": "the open question", "quote": "2 to 20 words copied exactly \
+from your turn", "turn": the turn id}]}
+If there are none, return {"questions": []}."""
+
+
+def check(question, my_turns):
+    """None if the question can be queued, else what's wrong with it. my_turns: {turn id: text}."""
+    if not isinstance(question, dict):
+        return "not a JSON object"
+    text, quote, turn = question.get("text"), question.get("quote"), question.get("turn")
+    if not isinstance(text, str) or not text.strip():
+        return "no question text"
+    if isinstance(turn, bool) or turn not in my_turns:
+        return f"turn {turn!r} is not one of the agent's turns in this session"
+    if not isinstance(quote, str) or not 2 <= len(quote.split()) <= 20:
+        return "the quote must be 2 to 20 words"
+    if quote not in my_turns[turn]:
+        return f"the quote is not found word for word in turn {turn}"
+    return None
+
+
+def duplicate_of(store, embedder, text, threshold):
+    """The id of an open or dropped question at least `threshold` similar to `text`, else None."""
+    pool = store.current("questions", "status IN ('open', 'dropped')")
+    if not pool:
+        return None
+    new, *old = embedder.embed([text] + [q["text"] for q in pool])
+    for question, vec in zip(pool, old):
+        if cosine(new, vec) >= threshold:
+            return question["id"]
+    return None
+
+
+def make_room(store, limit):
+    """While the queue is full, the oldest open question expires. Nothing is deleted."""
+    waiting = store.current("questions", "status='open'")       # oldest first
+    while len(waiting) >= limit:
+        store.revise("questions", waiting.pop(0), status="expired")
+
+
+def run(store, model, embedder, config, session_id):
+    """The one curiosity call for a finished session. Returns the ids of the questions queued."""
+    mine = [t for t in store.turns(session_id) if t["role"] == "agent"]
+    if not mine:
+        return []
+    transcript = "\n".join(f"[turn {t['id']}] agent: {t['text']}" for t in mine)
+    raw = model.complete([{"role": "system", "content": SYSTEM}, {"role": "user", "content": transcript}])
+    _, block = split_json(raw)
+    found = parse_json(block if block is not None else raw)
+    questions = found.get("questions") if isinstance(found, dict) else None
+    if not isinstance(questions, list):
+        store.log(session_id, "rejected", "curiosity's reply had no list of questions", raw)
+        return []
+    my_turns = {t["id"]: t["text"] for t in mine}
+    queued = []
+    for question in questions:
+        problem = check(question, my_turns)
+        if not problem:
+            twin = duplicate_of(store, embedder, question["text"], config.dedupe_similarity)
+            problem = twin and f"too close to question #{twin}"
+        if problem:
+            store.log(session_id, "rejected question", problem, json.dumps(question))
+            continue
+        make_room(store, config.question_queue)
+        qid = store.append("questions", {
+            "text": question["text"].strip(), "quote": question["quote"], "source_turn": question["turn"],
+            "session_id": session_id, "status": "open"})
+        queued.append(qid)
+        if config.auto_adopt:
+            adopt(store, qid)
+    return queued
+
+
+def open_questions(store):
+    return store.current("questions", "status='open'")
+
+
+def drop(store, question_id):
+    question = store.latest("questions", question_id)
+    if question is None or question["status"] != "open":
+        return None
+    return store.revise("questions", question, status="dropped")
+
+
+def adopt(store, question_id, rank=None):
+    """Your yes: the question becomes a desire whose row names the question and the turn that raised it."""
+    question = store.latest("questions", question_id)
+    if question is None or question["status"] != "open":
+        return None
+    desire_id = bdi.add_desire(store, question["text"], rank, source="curiosity",
+                               question_id=question["key"], source_turn=question["source_turn"])
+    store.revise("questions", question, status="adopted")
+    return desire_id
+
+
+def forget_turns(store, gone, date):
+    """Questions raised in deleted turns quote them, so they become content-free markers."""
+    if not gone:
+        return 0
+    marks = ",".join("?" * len(gone))
+    return store.db.execute(
+        f"UPDATE questions SET text=?, quote='', status='removed' WHERE source_turn IN ({marks})",
+        [bdi.REMOVED.format(what="a question", date=date), *gone]).rowcount
