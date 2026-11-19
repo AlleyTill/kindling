@@ -26,7 +26,13 @@ def test_demo_runs_with_no_key(cli, capsys):
 
 def test_idle_gap_ends_the_session_and_runs_curiosity(cli, capsys):
     cli("chat", "why is it raining?")
-    cli.clock.advance(31)
+    capsys.readouterr()
+    cli.clock.advance(29)
+    cli("curious", "list")
+    assert "raining" not in capsys.readouterr().out       # not idle long enough: still open
+    cli.clock.advance(2)
+    cli("curious", "list")
+    assert "why is it raining?" in capsys.readouterr().out    # idle: ended and read, without a new message
     cli("chat", "hello again")
     capsys.readouterr()
     cli("session", "list")
@@ -39,9 +45,22 @@ def test_idle_gap_ends_the_session_and_runs_curiosity(cli, capsys):
 def test_default_settings_need_nothing_installed():
     """The defaults are the fake model and the hash embedder, and building the agent imports nothing
     beyond Python itself (numpy is optional and unused by default)."""
-    assert (Config().backend, Config().embedder, Config().auto_adopt) == ("fake", "hash", False)
+    c = Config()
+    assert (c.backend, c.embedder, c.auto_adopt) == ("fake", "hash", False)
+    # the plan's numbers: 8,000-token recall, 30-minute idle gap, 20 open questions, 0.85 dedupe
+    assert (c.recall_budget_tokens, c.idle_minutes, c.question_queue, c.dedupe_similarity) == (8000, 30, 20, 0.85)
     code = ("import sys; from starter_agent.cli import build; from starter_agent.config import Config;"
             "build(Config(db=':memory:')); print(sorted({'sentence_transformers', 'numpy'} & set(sys.modules)))")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          cwd=Path(__file__).parent.parent, env={**os.environ, "HF_HUB_OFFLINE": "1"})
     assert (out.returncode, out.stdout.strip()) == (0, "[]"), out.stderr
+
+
+def test_one_model_call_per_turn_and_one_file(make_agent, tmp_path):
+    agent = make_agent(fn=lambda messages: "ok")
+    for i in range(3):
+        agent.handle(f"message {i}")
+    assert len(agent.model.calls) == 3
+    agent.end_session()
+    assert len(agent.model.calls) == 4                    # plus curiosity, once
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["agent.db"]

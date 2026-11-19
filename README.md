@@ -8,10 +8,9 @@ A small agent you run on your own computer. It:
 - **notices questions it raised and didn't answer**, and keeps a short list you can read and prune.
 
 **Status: a rough first skeleton** (19 November 2026). It runs and its tests pass, but no student has set
-it up from this README yet, so expect rough edges and tell us about them. **Its licence is still to be
-decided.**
+it up from this README yet, so expect rough edges. **Its licence is still to be decided.**
 
-It's deliberately small (about 1,000 lines of Python, standard library only) so you can read all of it in
+It's deliberately small (about 1,100 lines of Python, standard library only) so you can read all of it in
 an afternoon and change any of it.
 
 ## The loop
@@ -109,7 +108,8 @@ re-ranking in its reply; only your command changes a rank. A question becomes a 
 Everything is in `agent.db`: sessions, every turn, an embedding of each of your messages, beliefs, desires,
 intentions, curiosity's questions, and a log of what was rejected. Open it with any SQLite viewer
 (`sqlite3 agent.db .tables`). With Ollama nothing leaves your machine. With an API key, each turn sends the
-recalled sessions, the current beliefs and this session to that provider.
+recalled sessions, the current beliefs and this session to that provider, and curiosity sends the agent's
+own turns once when a session ends.
 
 Records are never edited in place: a change appends a new row that points at the old one (`supersedes`),
 so `beliefs history ID` shows how a view moved and why. Deleting is the one exception, because your word
@@ -145,7 +145,7 @@ API provider's logs) are outside its reach. To delete everything, delete `agent.
 | `api_key_env` | blank | the NAME of the variable holding your key |
 | `embedder` | `hash` | `hash` (needs nothing) or `bge-small` |
 | `recall_budget_tokens` | 8000 | recalled sessions per turn, counted as about 4 characters a token |
-| `idle_minutes` | 30 | a session ends after this long without a message |
+| `idle_minutes` | 30 | a session ends after this long without a message (nothing runs in the background, so it's noticed the next time you `chat` or run `curious list`) |
 | `question_queue` | 20 | the most open questions; past it, the oldest expires (it isn't deleted) |
 | `dedupe_similarity` | 0.85 | a new question this close to an open or dropped one is skipped |
 | `auto_adopt` | false | turn new questions into desires without asking you |

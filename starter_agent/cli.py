@@ -122,6 +122,7 @@ def cmd_intentions(agent, a):
 def cmd_curious(agent, a):
     store = agent.store
     if a.action == "list":
+        agent.end_if_idle()                  # so yesterday's session has been read
         for q in curiosity.open_questions(store):
             print(f"#{q['id']}  {q['text']}\n      \"{q['quote']}\" (turn {q['source_turn']}, "
                   f"session {q['session_id']})")

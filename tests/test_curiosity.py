@@ -133,6 +133,7 @@ def test_curiosity_5_full_queue_expires_oldest_and_deletes_nothing(make_agent):
     assert len(waiting) == 20 and waiting[0]["text"] == texts[1]
     assert agent.store.latest("questions", queued[0])["status"] == "expired"
     assert [q["id"] for q in questions(agent.store, "supersedes IS NULL")] == queued   # every original row is there
+    assert len(questions(agent.store)) == 22                                          # plus the expired version
 
 
 # 6. Adoption with automatic adoption off: nothing becomes a desire without `curious adopt`.

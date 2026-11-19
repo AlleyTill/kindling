@@ -50,6 +50,14 @@ def agent_turns(prompt):
     return {int(t): text for t, text in re.findall(r"\[turn (\d+)\] agent: (.*)", prompt)}
 
 
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """The tests never reach a real model: any attempt fails the test."""
+    def refuse(*args, **kwargs):
+        raise AssertionError("a test tried to reach a model over the network")
+    monkeypatch.setattr("starter_agent.models.urllib.request.urlopen", refuse)
+
+
 @pytest.fixture
 def make_agent(tmp_path):
     def make(replies=None, fn=None, **settings):

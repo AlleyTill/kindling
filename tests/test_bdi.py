@@ -72,6 +72,7 @@ def test_bdi_4_intention_serves_top_live_desire_after_rerank(make_agent):
     bdi.rerank_desire(store, methods, 1)
     bdi.rerank_desire(store, figure, 3)
     assert bdi.pick_intention(store)["serves"] == methods
+    assert [d["rank"] for d in store.history("desires", methods)] == [2, 1]     # a re-rank appends
     agent.handle("What next?")
     shown = agent.model.calls[-1][-1]["content"].split("YOUR CURRENT INTENTION:")[1]
     assert shown.split("THIS SESSION")[0].strip().endswith("Write the methods section")

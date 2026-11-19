@@ -3,6 +3,9 @@ import re
 import shlex
 from pathlib import Path
 
+from conftest import Clock
+from starter_agent.store import Store
+
 
 def test_readme_walkthrough_runs(cli, capsys):
     readme = (Path(__file__).parent.parent / "README.md").read_text()
@@ -14,7 +17,7 @@ def test_readme_walkthrough_runs(cli, capsys):
     assert capsys.readouterr().out.endswith('"turns_deleted": 4\n}\n')   # the last `beliefs` printed nothing
 
 
-def test_every_command(cli, capsys, monkeypatch):
+def test_every_command(cli, capsys, monkeypatch, tmp_path):
     out = lambda: capsys.readouterr().out
     # desires: add, list, rank, drop
     assert cli("desire", "add", "Replicate figure 3") == 0 and out() == "Desire #1 added.\n"
@@ -32,7 +35,12 @@ def test_every_command(cli, capsys, monkeypatch):
     assert cli("intentions") == 0 and out() == "#1  active  Write the methods\n"
     # beliefs and their history
     assert cli("beliefs") == 0 and out() == "#1  0.60  the sample is 12 rats  (evidence: turns 1)\n"
-    assert cli("beliefs", "history", "1") == 0 and "the sample is 12 rats" in out()
+    store = Store(str(tmp_path / "agent.db"), Clock())     # a second version, as a model would propose
+    store.append("beliefs", {"text": "the sample is 14 rats", "confidence": 0.8, "evidence": "[1, 3]",
+                             "flag": None}, store.get("beliefs", 1))
+    assert cli("beliefs", "history", "2") == 0
+    assert out() == ("#1  0.60  the sample is 12 rats  (evidence: turns 1)\n"
+                     "#2  0.80  the sample is 14 rats  (evidence: turns 1, 3)  supersedes #1\n")
     # curiosity: list, drop, adopt
     assert cli("chat", "why are rats nocturnal?") == 0 and cli("session", "end") == 0
     assert "queued 1 question(s)" in out()
