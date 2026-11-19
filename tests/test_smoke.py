@@ -1,8 +1,11 @@
-"""The whole thing, the way a student first meets it, plus two guarantees the README makes."""
+"""The whole thing, the way a student first meets it, plus guarantees the README makes."""
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from conftest import Clock
 from starter_agent.cli import main
@@ -91,3 +94,44 @@ def test_one_model_call_per_turn_and_one_file(make_agent, tmp_path):
     agent.end_session()
     assert len(agent.model.calls) == 4                    # plus curiosity, once
     assert sorted(p.name for p in tmp_path.iterdir()) == ["agent.db"]
+
+
+def test_a_failed_model_call_leaves_no_orphan_turn(make_agent):
+    up = []
+
+    def model(messages):
+        if not up:
+            raise OSError("connection refused")
+        return "Hello."
+    agent = make_agent(fn=model)
+    store = agent.store
+    with pytest.raises(OSError):
+        agent.handle("Is anyone there?")
+    assert store.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 0
+    assert store.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 0     # recall had embedded it
+    assert store.open_session()["title"] is None
+    up.append(True)
+    agent.handle("Is anyone there?")                                              # the retry
+    assert [(t["role"], t["text"]) for t in store.turns(store.open_session()["id"])] == [
+        ("user", "Is anyone there?"), ("agent", "Hello.")]
+    assert store.open_session()["title"] == "Is anyone there?"
+
+
+def test_a_row_and_its_key_are_written_together(make_agent):
+    """append() is one transaction: if writing the key fails, the row isn't left behind without one."""
+    store = make_agent().store
+
+    class KeyWriteFails:
+        def __init__(self, db):
+            self.real = db
+
+        def execute(self, sql, *args):
+            if sql.startswith("UPDATE beliefs SET key"):
+                raise sqlite3.OperationalError("disk I/O error (planted by the test)")
+            return self.real.execute(sql, *args)
+    real, store.db = store.db, KeyWriteFails(store.db)
+    with pytest.raises(sqlite3.OperationalError):
+        store.append("beliefs", {"text": "half-written", "confidence": 0.5, "evidence": "[1]", "flag": None})
+    store.db = real
+    assert store.db.execute("SELECT COUNT(*) FROM beliefs").fetchone()[0] == 0
+    assert store.db.in_transaction is False

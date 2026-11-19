@@ -4,9 +4,10 @@ The rule across parts (plan section 3): a record is changed by appending a new r
 old one (`supersedes`), never by editing it in place, so you can see how the agent got where it is.
 All versions of one record share a `key`: the id of its first version.
 
-Two exceptions, both said out loud:
-- a session's `title` and `ended_at` are filled in once;
-- deleting a session removes what it taught the agent (see Agent.delete_session). Your word wins.
+The exceptions, said out loud:
+- a session's `title` (its first message) and `ended_at` are filled in place;
+- deleting a session removes what it taught the agent (see Agent.delete_session). Your word wins;
+- a message the model never answered is taken back (take_back), so a retry isn't stored twice.
 """
 import sqlite3
 from contextlib import contextmanager
@@ -54,13 +55,15 @@ class Store:
 
     @contextmanager
     def transaction(self):
-        self.db.execute("BEGIN")
+        """Everything inside is written together or not at all. One inside another is a savepoint."""
+        self.db.execute("SAVEPOINT tx")
         try:
             yield
-            self.db.execute("COMMIT")
         except BaseException:
-            self.db.execute("ROLLBACK")
+            self.db.execute("ROLLBACK TO tx")
+            self.db.execute("RELEASE tx")
             raise
+        self.db.execute("RELEASE tx")
 
     # --- sessions and turns -------------------------------------------------------------------
 
@@ -90,6 +93,15 @@ class Store:
             "INSERT INTO turns (session_id, n, role, text, at) VALUES (?, ?, ?, ?, ?)",
             (session_id, n + 1, role, text, self.now())).lastrowid
 
+    def take_back(self, turn_id):
+        """Remove your newest turn, which got no reply, and its embedding (and the title it gave)."""
+        session_id = self.db.execute("SELECT session_id FROM turns WHERE id=?", (turn_id,)).fetchone()[0]
+        with self.transaction():
+            self.db.execute("DELETE FROM vectors WHERE turn_id=?", (turn_id,))
+            self.db.execute("DELETE FROM turns WHERE id=?", (turn_id,))
+            self.db.execute("UPDATE sessions SET title=NULL WHERE id=? AND NOT EXISTS "
+                            "(SELECT 1 FROM turns WHERE session_id=? AND role='user')", (session_id, session_id))
+
     def turns(self, session_id):
         return self.db.execute("SELECT * FROM turns WHERE session_id=? ORDER BY n", (session_id,)).fetchall()
 
@@ -109,14 +121,16 @@ class Store:
     # --- versioned records: beliefs, desires, intentions, questions ---------------------------
 
     def append(self, table, fields, old=None):
-        """Write a new version. With `old`, the new row supersedes it and shares its key."""
+        """Write a new version. With `old`, the new row supersedes it and shares its key. The row and its
+        key are written in one transaction, so no row is ever left without a key."""
         assert table in VERSIONED
         fields = dict(fields, supersedes=old["id"] if old else None, at=self.now())
         names = ", ".join(fields)
         marks = ", ".join("?" * len(fields))
-        new_id = self.db.execute(f"INSERT INTO {table} ({names}) VALUES ({marks})",
-                                 list(fields.values())).lastrowid
-        self.db.execute(f"UPDATE {table} SET key=? WHERE id=?", (old["key"] if old else new_id, new_id))
+        with self.transaction():
+            new_id = self.db.execute(f"INSERT INTO {table} ({names}) VALUES ({marks})",
+                                     list(fields.values())).lastrowid
+            self.db.execute(f"UPDATE {table} SET key=? WHERE id=?", (old["key"] if old else new_id, new_id))
         return new_id
 
     def revise(self, table, old, **changes):

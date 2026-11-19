@@ -49,18 +49,21 @@ class Agent:
     def handle(self, message):
         """One turn of the loop. Returns the agent's reply."""
         sid = self.session_id()
-        self.store.add_turn(sid, "user", message)
+        turn = self.store.add_turn(sid, "user", message)
+        try:
+            # RECALL: past sessions only; this one is already in context below.
+            pack, recalled = recall(self.store, self.embedder, message,
+                                    self.config.recall_budget_tokens, exclude=sid)
 
-        # RECALL: past sessions only; this one is already in context below.
-        pack, recalled = recall(self.store, self.embedder, message,
-                                self.config.recall_budget_tokens, exclude=sid)
+            # DELIBERATE: the intention is picked in code, never by the model.
+            intention = bdi.pick_intention(self.store)
+            beliefs = bdi.current_beliefs(self.store)
 
-        # DELIBERATE: the intention is picked in code, never by the model.
-        intention = bdi.pick_intention(self.store)
-        beliefs = bdi.current_beliefs(self.store)
-
-        # ACT: one call.
-        raw = self.model.complete(bdi.act_messages(pack, beliefs, intention, render_session(self.store, sid)))
+            # ACT: one call.
+            raw = self.model.complete(bdi.act_messages(pack, beliefs, intention, render_session(self.store, sid)))
+        except BaseException:              # no reply (the model couldn't be reached, or you pressed Ctrl-C):
+            self.store.take_back(turn)     # a turn is kept only with its reply, so a retry isn't stored twice
+            raise
         reply, block = split_json(raw)
 
         # RECORD: evidence may cite only turns the model was shown.
