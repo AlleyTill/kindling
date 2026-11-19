@@ -1,4 +1,8 @@
-# A starter agent of your own
+# Kindling
+
+**Kindling: a starter agent for the Vibe Research course. Rough on purpose: a skeleton you build out, not a product. It catches; you build the fire.**
+
+*A prototype.* It was built and checked overnight on 18-19 November 2026 by Liberation Labs' agents, for students to read, run and extend.
 
 A small agent you run on your own computer. It:
 
@@ -8,8 +12,8 @@ A small agent you run on your own computer. It:
 - **notices questions it raised and didn't answer**, and keeps a short list you can read and prune.
 
 **Status: a rough first skeleton** (19 November 2026). It runs and its tests pass, **tested on Linux with
-Python 3.12 only**. No student has set it up from this README yet, so expect rough edges. **Its licence is
-still to be decided.**
+Python 3.12 only**. No student has set it up from this README yet, so expect rough edges. **Licence:** the
+Liberation Labs Hippocratic License 3.0 (see [LICENSE.md](LICENSE.md)).
 
 It's deliberately small (about 1,400 lines of Python, standard library only) so you can read all of it in
 an afternoon and change any of it.
