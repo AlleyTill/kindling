@@ -6,7 +6,7 @@ from dataclasses import dataclass, fields
 
 @dataclass
 class Config:
-    db: str = "agent.db"              # the one file that holds everything
+    db: str = "memory/agent.db"       # the one file that holds everything, in this agent's own folder
     backend: str = "fake"             # fake | ollama | openai | anthropic
     model: str = ""                   # e.g. "llama3.1:8b" for ollama; blank = the backend's default
     base_url: str = ""                # blank = the backend's usual address
@@ -49,4 +49,7 @@ def load_config(path="agent.json", **overrides):
             raise SystemExit(f'{path}: "{name}" should be {KINDS[defaults[name].type]} (the default is '
                              f"{json.dumps(defaults[name].default)}), not {json.dumps(value)}.")
     values.update({name: value for name, value in overrides.items() if value is not None})
+    db = values.get("db", Config.db)
+    if overrides.get("db") is None and db != ":memory:" and not os.path.isabs(db):
+        values["db"] = os.path.join(os.path.dirname(path or ""), db)   # beside this agent's agent.json
     return Config(**values)

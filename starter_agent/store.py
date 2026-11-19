@@ -9,6 +9,7 @@ The exceptions, said out loud:
 - deleting a session removes what it taught the agent (see Agent.delete_session). Your word wins;
 - a message the model never answered is taken back (take_back), so a retry isn't stored twice.
 """
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -43,6 +44,19 @@ VERSIONED = ("beliefs", "desires", "intentions", "questions")
 META = ("id", "key", "supersedes", "at")
 
 
+def make_private(path):
+    """Your agent's memory is yours. Where the system has file modes (Linux, macOS), a folder created here
+    is readable by you alone (700), and so is the file (600). On Windows your user folder's permissions apply."""
+    folder = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(folder):
+        os.makedirs(folder, mode=0o700)
+        if os.name == "posix":
+            os.chmod(folder, 0o700)
+    os.close(os.open(path, os.O_CREAT | os.O_WRONLY, 0o600))     # created private, never briefly open
+    if os.name == "posix":
+        os.chmod(path, 0o600)
+
+
 def local(timestamp):
     """A stored time (UTC) as your computer's local time, for showing: '2026-11-19 01:00'."""
     return datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
@@ -52,6 +66,8 @@ class Store:
     def __init__(self, path, clock):
         self.path = path
         self.clock = clock                     # a function returning the time now, as a datetime
+        if path != ":memory:":
+            make_private(path)
         self.db = sqlite3.connect(path, isolation_level=None)   # each statement commits by itself
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)

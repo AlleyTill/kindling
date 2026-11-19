@@ -1,6 +1,7 @@
 """The whole thing, the way a student first meets it, plus guarantees the README makes."""
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -76,7 +77,7 @@ def test_default_settings_need_nothing_installed():
     """The defaults are the fake model and the hash embedder, and building the agent imports nothing
     beyond Python itself (numpy is optional and unused by default)."""
     c = Config()
-    assert (c.backend, c.embedder, c.auto_adopt) == ("fake", "hash", False)
+    assert (c.backend, c.embedder, c.auto_adopt, c.db) == ("fake", "hash", False, "memory/agent.db")
     # the plan's numbers: 8,000-token recall, 30-minute idle gap, 20 open questions, 0.85 dedupe
     assert (c.recall_budget_tokens, c.idle_minutes, c.question_queue, c.dedupe_similarity) == (8000, 30, 20, 0.85)
     code = ("import sys; from starter_agent.cli import build; from starter_agent.config import Config;"
@@ -135,3 +136,20 @@ def test_a_row_and_its_key_are_written_together(make_agent):
     store.db = real
     assert store.db.execute("SELECT COUNT(*) FROM beliefs").fetchone()[0] == 0
     assert store.db.in_transaction is False
+
+
+def test_each_agent_has_its_own_private_memory_folder(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)                         # run from one folder...
+    first, second = tmp_path / "first", tmp_path / "second"
+    for folder in (first, second):                      # ...two agents, each with its own agent.json
+        folder.mkdir()
+        (folder / "agent.json").write_text("{}")
+        assert main(["--config", str(folder / "agent.json"), "chat", "hello"], clock=Clock()) == 0
+        memory = folder / "memory"
+        assert [p.name for p in memory.iterdir()] == ["agent.db"]
+        assert stat.S_IMODE(memory.stat().st_mode) == 0o700
+        assert stat.S_IMODE((memory / "agent.db").stat().st_mode) == 0o600
+    assert not (tmp_path / "memory").exists()           # no shared default location
+    (first / "memory" / "agent.db").chmod(0o644)
+    main(["--config", str(first / "agent.json"), "beliefs"], clock=Clock())
+    assert stat.S_IMODE((first / "memory" / "agent.db").stat().st_mode) == 0o600
