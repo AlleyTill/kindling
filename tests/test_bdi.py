@@ -141,5 +141,76 @@ def test_bdi_6_delete_session_removes_what_it_alone_taught(make_agent, tmp_path)
     assert store.turn_ids([s1]) == set() and store.session(s1) is None
     assert store.db.execute("SELECT COUNT(*) FROM vectors WHERE turn_id=?", (t1,)).fetchone()[0] == 0
     assert bdi.live_desires(store) == [] and bdi.pick_intention(store) is None
-    assert counts["beliefs_removed"] == 1 and counts["beliefs_reduced"] == 1
+    assert counts["belief_versions_removed"] == 1 and counts["beliefs_flagged_for_review"] == 1
     assert secret.encode() not in files()
+
+
+# 1b. A change may only supersede the CURRENT version of a belief that exists.
+def test_bdi_1b_supersedes_must_name_a_current_belief(make_agent):
+    agent = make_agent(replies=[
+        say("a", beliefs=[{"text": "keep", "confidence": 0.5, "evidence": [1]},          # belief #1
+                          {"text": "v1", "confidence": 0.5, "evidence": [1]}]),           # belief #2
+        say("b", beliefs=[{"text": "v2", "confidence": 0.6, "evidence": [3], "supersedes": 2}]),
+        say("c", beliefs=[{"text": "from an old version", "confidence": 0.7, "evidence": [5], "supersedes": 2},
+                          {"text": "from nowhere", "confidence": 0.7, "evidence": [5], "supersedes": 99},
+                          {"text": "true is not #1", "confidence": 0.7, "evidence": [5], "supersedes": True},
+                          {"text": "true is not turn 1", "confidence": 0.7, "evidence": [True]},
+                          {"text": "a list is not a turn", "confidence": 0.7, "evidence": [[5]]}]),
+    ])
+    for message in ("one", "two", "three"):             # turns 1, 3, 5
+        agent.handle(message)
+    assert [b["text"] for b in bdi.current_beliefs(agent.store)] == ["keep", "v2"]
+    assert len(logged(agent.store, "rejected belief")) == 5
+
+
+# 4b. An intention is marked done only with real turns as evidence.
+def test_bdi_4b_intention_done_needs_real_evidence(make_agent):
+    agent = make_agent(replies=[say("Done!", done=[999]), say("Done!", done=[]), say("Done.", done=[5])])
+    bdi.add_desire(agent.store, "Replicate figure 3")
+    agent.handle("Is it done?")                          # turn 1: cites a ghost turn
+    agent.handle("Now?")                                 # turn 3: cites nothing
+    assert bdi.pick_intention(agent.store)["status"] == "active"
+    assert "999" in logged(agent.store, "rejected intention_done")[0]
+    agent.handle("It is done.")                          # turn 5, cited as the evidence
+    (done,) = agent.store.current("intentions")
+    assert (done["status"], json.loads(done["evidence"])) == ("done", [5])
+    assert bdi.pick_intention(agent.store) is None       # the only desire's intention is done
+
+
+# 6b. A belief that changed only in the deleted session goes back to its earlier view, flagged;
+#     an intention done only by the deleted session's evidence is active again.
+def test_bdi_6b_delete_undoes_a_change_made_only_in_that_session(make_agent):
+    secret = "amber lantern protocol"
+    agent = make_agent(replies=[say("ok", done=[3])])
+    store = agent.store
+    s1, (t1, _) = add_session(store, [("user", "The mice are weighed on Mondays."), ("agent", "Noted.")])
+    old = store.append("beliefs", {"text": "Weighing is on Mondays", "confidence": 0.8,
+                                   "evidence": json.dumps([t1]), "flag": None})
+    bdi.add_desire(store, "Weigh the mice")
+    agent.handle(f"Switch to Fridays, per the {secret}.")      # turn 3 opens session 2
+    s2 = store.open_session()["id"]
+    changed = store.append("beliefs", {"text": f"Weighing is on Fridays ({secret})", "confidence": 0.9,
+                                       "evidence": json.dumps([3]), "flag": None}, store.get("beliefs", old))
+    assert bdi.pick_intention(store) is None                   # done, citing turn 3
+    agent.delete_session(s2)
+    versions = store.history("beliefs", old)
+    assert [v["id"] for v in versions[:2]] == [old, changed] and versions[1]["flag"] == "removed"
+    (now,) = bdi.current_beliefs(store)
+    assert (now["text"], now["confidence"], json.loads(now["evidence"])) == ("Weighing is on Mondays", 0.8, [t1])
+    assert now["flag"] == "review" and now["supersedes"] == changed
+    intention = bdi.pick_intention(store)
+    assert (intention["status"], json.loads(intention["evidence"])) == ("active", [])
+    dump = "\n".join(store.db.iterdump())
+    assert secret not in dump and "Fridays" not in dump
+
+
+# 6c. Ids of deleted turns and sessions are never handed out again, so no record can come to point
+#     at a new, unrelated turn.
+def test_bdi_6c_deleted_ids_are_never_reused(make_agent):
+    agent = make_agent()
+    store = agent.store
+    add_session(store, [("user", "first"), ("agent", "ok")])
+    s2, ids = add_session(store, [("user", "second"), ("agent", "ok")])
+    agent.delete_session(s2)
+    s3, (t,) = add_session(store, [("user", "third")])
+    assert s3 > s2 and t > max(ids)

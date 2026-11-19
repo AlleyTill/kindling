@@ -12,10 +12,11 @@ import sqlite3
 from contextlib import contextmanager
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS sessions (
-    id INTEGER PRIMARY KEY, started_at TEXT, ended_at TEXT, title TEXT);
+CREATE TABLE IF NOT EXISTS sessions (        -- AUTOINCREMENT: a deleted id is never handed out again,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,     -- so an old record never points at a new, unrelated turn
+    started_at TEXT, ended_at TEXT, title TEXT);
 CREATE TABLE IF NOT EXISTS turns (
-    id INTEGER PRIMARY KEY, session_id INTEGER, n INTEGER, role TEXT, text TEXT, at TEXT);
+    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER, n INTEGER, role TEXT, text TEXT, at TEXT);
 CREATE TABLE IF NOT EXISTS vectors (          -- one embedding per user turn, per embedder
     turn_id INTEGER, embedder TEXT, vec BLOB, PRIMARY KEY (turn_id, embedder));
 CREATE TABLE IF NOT EXISTS beliefs (

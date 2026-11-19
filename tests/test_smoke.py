@@ -1,7 +1,10 @@
 """The whole thing, the way a student first meets it, plus two guarantees the README makes."""
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+from starter_agent.config import Config
 
 
 def test_demo_runs_with_no_key(cli, capsys):
@@ -16,7 +19,7 @@ def test_demo_runs_with_no_key(cli, capsys):
     assert cli("curious", "list") == 0
     assert '"I\'m not sure about that yet" (turn 4, session 1)' in capsys.readouterr().out
     assert cli("session", "delete", "1", "--yes") == 0
-    assert '"beliefs_removed": 1' in capsys.readouterr().out
+    assert '"belief_versions_removed": 1' in capsys.readouterr().out
     assert cli("beliefs") == 0 and capsys.readouterr().out == ""
     assert cli("curious", "list") == 0 and capsys.readouterr().out == ""
 
@@ -34,8 +37,11 @@ def test_idle_gap_ends_the_session_and_runs_curiosity(cli, capsys):
 
 
 def test_default_settings_need_nothing_installed():
+    """The defaults are the fake model and the hash embedder, and building the agent imports nothing
+    beyond Python itself (numpy is optional and unused by default)."""
+    assert (Config().backend, Config().embedder, Config().auto_adopt) == ("fake", "hash", False)
     code = ("import sys; from starter_agent.cli import build; from starter_agent.config import Config;"
-            "build(Config(db=':memory:')); print('sentence_transformers' in sys.modules)")
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
-                         cwd=Path(__file__).parent.parent)
-    assert out.stdout.strip() == "False"
+            "build(Config(db=':memory:')); print(sorted({'sentence_transformers', 'numpy'} & set(sys.modules)))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         cwd=Path(__file__).parent.parent, env={**os.environ, "HF_HUB_OFFLINE": "1"})
+    assert (out.returncode, out.stdout.strip()) == (0, "[]"), out.stderr

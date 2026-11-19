@@ -96,7 +96,7 @@ def act_messages(pack, beliefs, intention, this_session):
 def check_evidence(evidence, allowed):
     if not isinstance(evidence, list) or not evidence:
         return "no evidence: a change must cite the turn ids it rests on"
-    bad = [t for t in evidence if isinstance(t, bool) or t not in allowed]
+    bad = [t for t in evidence if type(t) is not int or t not in allowed]   # type(): True is not turn 1
     if bad:
         return f"evidence {bad} is not a turn in the recalled sessions or this session"
     return None
@@ -116,7 +116,7 @@ def check_belief(store, change, allowed):
         return problem
     old = change.get("supersedes")
     if old is not None:
-        latest = store.latest("beliefs", old) if isinstance(old, int) else None
+        latest = store.latest("beliefs", old) if type(old) is int else None
         if latest is None or latest["id"] != old or latest["flag"] == "removed":
             return f"supersedes {old!r}, which is not a current belief"
     return None
@@ -130,8 +130,12 @@ def record_changes(store, block, allowed, session_id, intention):
     if not isinstance(changes, dict):
         store.log(session_id, "rejected", "the JSON block did not parse as an object", block)
         return []
+    proposed = changes.get("beliefs") or []
+    if not isinstance(proposed, list):
+        store.log(session_id, "rejected", '"beliefs" is not a list', block)
+        proposed = []
     stored = []
-    for change in changes.get("beliefs") or []:
+    for change in proposed:
         problem = check_belief(store, change, allowed)
         if problem:
             store.log(session_id, "rejected belief", problem, json.dumps(change))
@@ -155,27 +159,37 @@ def record_changes(store, block, allowed, session_id, intention):
 def forget_turns(store, gone, date):
     """Remove what the BDI learned only from the turns in `gone` (a set of turn ids).
 
-    - A belief version whose evidence was all in `gone` is overwritten by a content-free marker.
-    - A current belief with other evidence gets a new version keeping only that other evidence,
-      flagged for your review if it lost half or more of its evidence.
+    - Every belief version whose evidence was all in `gone` is overwritten by a content-free marker.
+    - A current belief with other evidence gets a new version keeping only that other evidence, flagged
+      for your review: the code can't tell whether its confidence still holds without the rest.
+    - A current belief that changed only in `gone` goes back to its last earlier version, flagged.
+    - A done intention whose evidence was in `gone` keeps only its other evidence; with none, it's active again.
     - A desire adopted from a question raised in `gone`, and the intention serving it, become markers.
     """
-    counts = {"beliefs_removed": 0, "beliefs_reduced": 0, "flagged_for_review": 0, "desires_removed": 0}
-    marker = REMOVED.format(what="a belief", date=date)
+    counts = {"belief_versions_removed": 0, "beliefs_flagged_for_review": 0, "desires_removed": 0}
+    before = current_beliefs(store)
     for row in store.db.execute("SELECT * FROM beliefs WHERE flag IS NOT 'removed'").fetchall():
         evidence = json.loads(row["evidence"])
         if evidence and all(t in gone for t in evidence):
             store.db.execute("UPDATE beliefs SET text=?, confidence=NULL, evidence='[]', flag='removed' "
-                             "WHERE id=?", (marker, row["id"]))
-            counts["beliefs_removed"] += 1
-    for row in current_beliefs(store):
+                             "WHERE id=?", (REMOVED.format(what="a belief", date=date), row["id"]))
+            counts["belief_versions_removed"] += 1
+    for row in before:
+        evidence = json.loads(row["evidence"])
+        if not any(t in gone for t in evidence):
+            continue
+        survivors = [v for v in store.history("beliefs", row["id"]) if v["flag"] != "removed"]
+        if survivors:                     # the latest version that still has evidence outside `gone`
+            kept = [t for t in json.loads(survivors[-1]["evidence"]) if t not in gone]
+            store.append("beliefs", {"text": survivors[-1]["text"], "confidence": survivors[-1]["confidence"],
+                                     "evidence": json.dumps(kept), "flag": "review"},
+                         store.latest("beliefs", row["id"]))
+            counts["beliefs_flagged_for_review"] += 1
+    for row in store.current("intentions", "status='done' AND flag IS NOT 'removed'"):
         evidence = json.loads(row["evidence"])
         kept = [t for t in evidence if t not in gone]
-        if len(kept) < len(evidence):
-            unsupported = len(evidence) - len(kept) >= len(kept)
-            store.revise("beliefs", row, evidence=json.dumps(kept), flag="review" if unsupported else None)
-            counts["beliefs_reduced"] += 1
-            counts["flagged_for_review"] += unsupported
+        if kept != evidence:
+            store.revise("intentions", row, evidence=json.dumps(kept), status="done" if kept else "active")
     marks = ",".join("?" * len(gone))
     keys = [r[0] for r in store.db.execute(
         f"SELECT DISTINCT key FROM desires WHERE source_turn IN ({marks})", list(gone))] if gone else []
