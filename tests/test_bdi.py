@@ -2,6 +2,8 @@
 import json
 import re
 
+import pytest
+
 from conftest import add_session, agent_turns, say, scripted
 from starter_agent import bdi, curiosity
 
@@ -216,3 +218,69 @@ def test_bdi_6c_deleted_ids_are_never_reused(make_agent):
     agent.delete_session(s2)
     s3, (t,) = add_session(store, [("user", "third")])
     assert s3 > s2 and t > max(ids)
+
+
+def file_bytes(tmp_path):
+    """Everything on disk for the database: the grep in plan section 4's test 6 reads this."""
+    return b"".join(p.read_bytes() for p in tmp_path.iterdir() if p.name.startswith("agent.db"))
+
+
+# 6d. Two deletes, in either order. A turn an earlier delete took counts as gone, so a belief that rested
+#     on both sessions doesn't come back; and a review copy made by the first delete still goes with the
+#     session its words were written in.
+@pytest.mark.parametrize("first, second", [("a", "b"), ("b", "a"), ("a", "c"), ("c", "a")])
+def test_bdi_6d_two_deletes_in_either_order(make_agent, tmp_path, first, second):
+    agent = make_agent()
+    store = agent.store
+    store.db.execute("PRAGMA secure_delete=OFF")
+    a, (ta, _) = add_session(store, [("user", "The code word is HEMLOCK-SEVEN."), ("agent", "ok")])
+    b, (tb, _) = add_session(store, [("user", "The mice are weighed on Mondays."), ("agent", "ok")])
+    c, _ = add_session(store, [("user", "What else do you know?"), ("agent", "ok")])
+    on_a_and_b = store.append("beliefs", {"text": "HEMLOCK-SEVEN opens the mouse room", "confidence": 0.7,
+                                          "evidence": json.dumps([ta, tb]), "session_id": None, "flag": None})
+    written_in_c = store.append("beliefs", {"text": "The new code word is OSPREY-NINE", "confidence": 0.7,
+                                            "evidence": json.dumps([ta, tb]), "session_id": c, "flag": None})
+    names = {"a": a, "b": b, "c": c}
+    agent.delete_session(names[first])
+    agent.delete_session(names[second])
+    existing = {row[0] for row in store.db.execute("SELECT id FROM turns")}
+    for belief in bdi.current_beliefs(store):
+        assert set(json.loads(belief["evidence"])) <= existing, belief["text"]   # nothing cites a ghost
+    if {first, second} == {"a", "b"}:            # every turn it rested on is gone
+        assert store.latest("beliefs", on_a_and_b)["flag"] == "removed"
+        assert b"HEMLOCK" not in file_bytes(tmp_path)
+    else:                                         # written elsewhere, with evidence in b: it stays, flagged
+        kept = store.latest("beliefs", on_a_and_b)
+        assert (kept["text"], json.loads(kept["evidence"]), kept["flag"]) == (
+            "HEMLOCK-SEVEN opens the mouse room", [tb], "review")
+    if "c" in (first, second):                   # written in c: it goes, whatever it cites
+        assert store.latest("beliefs", written_in_c)["flag"] == "removed"
+        assert b"OSPREY" not in file_bytes(tmp_path)
+
+
+# 6e. A belief version written in the deleted session goes, whatever it cites (test 6: no text from the
+#     deleted session survives). The belief falls back to its version from before, flagged for review.
+def test_bdi_6e_a_version_written_in_the_deleted_session_goes_whatever_it_cites(make_agent, tmp_path):
+    agent = make_agent(replies=[say("Noted.", beliefs=[
+        {"text": "The password hint is OSPREY-NINE", "confidence": 0.9, "evidence": [1]},  # a recalled turn
+        {"text": "Weighing moved to Fridays per Dr. QUILLFEATHER", "confidence": 0.8, "evidence": [1, 3],
+         "supersedes": 1}])])                                                               # mixed evidence
+    store = agent.store
+    store.db.execute("PRAGMA secure_delete=OFF")
+    s1, (t1, _) = add_session(store, [("user", "The mice are weighed on Mondays. My hint is in a notebook."),
+                                      ("agent", "Noted.")])
+    mondays = store.append("beliefs", {"text": "Weighing is on Mondays", "confidence": 0.8,
+                                       "evidence": json.dumps([t1]), "session_id": s1, "flag": None})
+    agent.handle("Dr. QUILLFEATHER moved the weighing to Fridays. The hint is OSPREY-NINE.")   # turn 3
+    s2 = store.open_session()["id"]
+    hint = next(b for b in bdi.current_beliefs(store) if b["key"] != mondays)
+    fridays = store.latest("beliefs", mondays)
+    assert (hint["session_id"], fridays["session_id"], fridays["supersedes"]) == (s2, s2, mondays)
+    assert b"OSPREY" in file_bytes(tmp_path) and b"QUILLFEATHER" in file_bytes(tmp_path)
+    agent.delete_session(s2)
+    assert store.latest("beliefs", hint["id"])["flag"] == "removed"          # nothing written before: a marker
+    back = store.latest("beliefs", mondays)
+    assert (back["text"], back["confidence"], json.loads(back["evidence"]), back["flag"]) == (
+        "Weighing is on Mondays", 0.8, [t1], "review")
+    assert [b["id"] for b in bdi.current_beliefs(store)] == [back["id"]]
+    assert b"OSPREY" not in file_bytes(tmp_path) and b"QUILLFEATHER" not in file_bytes(tmp_path)

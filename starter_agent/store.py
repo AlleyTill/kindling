@@ -19,9 +19,10 @@ CREATE TABLE IF NOT EXISTS turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER, n INTEGER, role TEXT, text TEXT, at TEXT);
 CREATE TABLE IF NOT EXISTS vectors (          -- one embedding per user turn, per embedder
     turn_id INTEGER, embedder TEXT, vec BLOB, PRIMARY KEY (turn_id, embedder));
-CREATE TABLE IF NOT EXISTS beliefs (
+CREATE TABLE IF NOT EXISTS beliefs (         -- evidence: JSON list of turn ids
     id INTEGER PRIMARY KEY, key INTEGER, supersedes INTEGER, at TEXT,
-    text TEXT, confidence REAL, evidence TEXT, flag TEXT);   -- evidence: JSON list of turn ids
+    text TEXT, confidence REAL, evidence TEXT,
+    session_id INTEGER, flag TEXT);           -- session_id: the session this version was written in
 CREATE TABLE IF NOT EXISTS desires (
     id INTEGER PRIMARY KEY, key INTEGER, supersedes INTEGER, at TEXT,
     text TEXT, rank INTEGER, source TEXT, live INTEGER,

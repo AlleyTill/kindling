@@ -115,25 +115,29 @@ Records are never edited in place: a change appends a new row that points at the
 so `beliefs history ID` shows how a view moved and why. Deleting is the one exception, because your word
 wins.
 
-**When you delete a session, anything it learned only from that session goes with it.**
-`session delete ID` removes:
+**When you delete a session, no text written in it stays in the file.** `session delete ID` removes:
 
 - the session, its turns, their embeddings and its log rows;
-- every belief version whose only evidence was in it. A content-free marker stays in its place ("a belief
-  derived from a deleted session was removed on DATE"), so the history is honest about the gap;
-- a change to a belief made only in that session: the belief goes back to its earlier version, flagged for
-  your review;
-- that session's turns from the evidence of beliefs that also rest on other sessions. They keep only the
-  other evidence and are flagged for your review, because the agent can't tell whether its confidence still
-  holds;
+- **every belief version written during that session, whatever it cites**, even one that cites only an
+  older session's turns: its words were written there. Also every belief version whose evidence is all
+  gone (in this session, or in one you deleted before). A content-free marker stays in each one's place
+  ("a belief derived from a deleted session was removed on DATE"), so the history is honest about the gap;
+- a belief that lost a version this way **falls back to its latest version written outside the deleted
+  sessions whose evidence still exists**, flagged for your review. If there is none, the belief is just
+  the marker;
+- that session's turns from the evidence of beliefs written in *other* sessions that also cite other
+  evidence. Those beliefs stay, keeping only the evidence that's left, flagged for your review, because
+  the agent can't tell whether the confidence still holds;
 - that session's turns from the evidence of a done intention (with no evidence left, it's active again);
 - the questions curiosity found in it, and any desire adopted from them, which become markers too.
 
 Then the file is rebuilt (SQLite's `VACUUM`) so the deleted text doesn't linger in its free space.
 
-What it can't reach: the agent's turns in *later* sessions stay, and if a later session recalled the deleted
-one, a reply there may repeat its words; delete that session too. Copies outside the file (your backups, an
-API provider's logs) are outside its reach. To delete everything, delete `agent.db`.
+What it can't reach, plainly: text written in a *later* session stays, even when it repeats the deleted
+session. That covers the agent's replies there, and a belief written there that cited the deleted session
+alongside other evidence (its wording stays, flagged for review). Delete that later session too if you
+want its words gone. Copies outside the file (your backups, an API provider's logs) are outside its reach.
+To delete everything, delete `agent.db`.
 
 ## Settings (`agent.json`)
 

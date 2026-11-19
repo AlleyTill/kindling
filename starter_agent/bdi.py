@@ -143,7 +143,7 @@ def record_changes(store, block, allowed, session_id, intention):
         old = store.get("beliefs", change["supersedes"]) if change.get("supersedes") is not None else None
         stored.append(store.append("beliefs", {
             "text": change["text"].strip(), "confidence": float(change["confidence"]),
-            "evidence": json.dumps(change["evidence"]), "flag": None}, old))
+            "evidence": json.dumps(change["evidence"]), "session_id": session_id, "flag": None}, old))
     done = changes.get("intention_done")
     if done:
         problem = check_evidence(done, allowed) or (None if intention else "there is no current intention")
@@ -156,38 +156,42 @@ def record_changes(store, block, allowed, session_id, intention):
 
 # --- When you delete a session --------------------------------------------------------------------
 
-def forget_turns(store, gone, date):
-    """Remove what the BDI learned only from the turns in `gone` (a set of turn ids).
+def forget_turns(store, session_id, gone, date):
+    """Remove what the BDI learned from session `session_id`, whose turns are `gone` (a set of turn ids).
+    A cited turn that no longer exists (an earlier delete took it) counts as gone too.
 
-    - Every belief version whose evidence was all in `gone` is overwritten by a content-free marker.
-    - A current belief with other evidence gets a new version keeping only that other evidence, flagged
-      for your review: the code can't tell whether its confidence still holds without the rest.
-    - A current belief that changed only in `gone` goes back to its last earlier version, flagged.
-    - A done intention whose evidence was in `gone` keeps only its other evidence; with none, it's active again.
-    - A desire adopted from a question raised in `gone`, and the intention serving it, become markers.
+    - Every belief version WRITTEN in the session becomes a content-free marker, whatever it cites: its
+      words may come from that session. So does every version whose evidence is all gone.
+    - A current belief that lost a version or some evidence falls back to its latest version that isn't
+      a marker, keeping only the evidence that still exists, flagged for your review: the code can't tell
+      whether its confidence still holds. With no such version left, the belief is just a marker.
+    - A done intention whose evidence is gone keeps only its other evidence; with none, it's active again.
+    - A desire adopted from a question raised in the session, and the intention serving it, become markers.
     """
+    alive = {row[0] for row in store.db.execute("SELECT id FROM turns")} - set(gone)
     counts = {"belief_versions_removed": 0, "beliefs_flagged_for_review": 0, "desires_removed": 0}
     before = current_beliefs(store)
     for row in store.db.execute("SELECT * FROM beliefs WHERE flag IS NOT 'removed'").fetchall():
         evidence = json.loads(row["evidence"])
-        if evidence and all(t in gone for t in evidence):
-            store.db.execute("UPDATE beliefs SET text=?, confidence=NULL, evidence='[]', flag='removed' "
-                             "WHERE id=?", (REMOVED.format(what="a belief", date=date), row["id"]))
+        if row["session_id"] == session_id or (evidence and not any(t in alive for t in evidence)):
+            store.db.execute("UPDATE beliefs SET text=?, confidence=NULL, evidence='[]', session_id=NULL, "
+                             "flag='removed' WHERE id=?", (REMOVED.format(what="a belief", date=date), row["id"]))
             counts["belief_versions_removed"] += 1
     for row in before:
-        evidence = json.loads(row["evidence"])
-        if not any(t in gone for t in evidence):
-            continue
+        if row["session_id"] != session_id and all(t in alive for t in json.loads(row["evidence"])):
+            continue                      # untouched by this delete
         survivors = [v for v in store.history("beliefs", row["id"]) if v["flag"] != "removed"]
-        if survivors:                     # the latest version that still has evidence outside `gone`
-            kept = [t for t in json.loads(survivors[-1]["evidence"]) if t not in gone]
-            store.append("beliefs", {"text": survivors[-1]["text"], "confidence": survivors[-1]["confidence"],
-                                     "evidence": json.dumps(kept), "flag": "review"},
+        if survivors:                     # its latest version that isn't a marker
+            back = survivors[-1]
+            kept = [t for t in json.loads(back["evidence"]) if t in alive]
+            store.append("beliefs", {"text": back["text"], "confidence": back["confidence"],
+                                     "evidence": json.dumps(kept), "session_id": back["session_id"],
+                                     "flag": "review"},     # its text came from back's session: say so
                          store.latest("beliefs", row["id"]))
             counts["beliefs_flagged_for_review"] += 1
     for row in store.current("intentions", "status='done' AND flag IS NOT 'removed'"):
         evidence = json.loads(row["evidence"])
-        kept = [t for t in evidence if t not in gone]
+        kept = [t for t in evidence if t in alive]
         if kept != evidence:
             store.revise("intentions", row, evidence=json.dumps(kept), status="done" if kept else "active")
     marks = ",".join("?" * len(gone))

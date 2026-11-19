@@ -80,9 +80,9 @@ class Agent:
         if self.store.session(session_id) is None:
             return None
         gone = self.store.turn_ids([session_id])
-        date = self.store.clock().date().isoformat()
+        date = self.store.clock().astimezone().date().isoformat()      # your local date
         with self.store.transaction():
-            counts = bdi.forget_turns(self.store, gone, date)
+            counts = bdi.forget_turns(self.store, session_id, gone, date)
             counts["question_rows_removed"] = curiosity.forget_turns(self.store, gone, date)
             self.store.forget_session(session_id)
             counts["turns_deleted"] = len(gone)
