@@ -25,14 +25,20 @@ class Agent:
     def __init__(self, store, model, embedder, config):
         self.store, self.model, self.embedder, self.config = store, model, embedder, config
 
-    def end_if_idle(self):
-        """Nothing runs in the background, so an idle session is ended the next time you use the agent."""
+    def idle_session(self):
+        """The open session if it has sat idle past the gap, else None. Read-only."""
         session = self.store.open_session()
         if session:
             turns = self.store.turns(session["id"])
             last = datetime.fromisoformat(turns[-1]["at"] if turns else session["started_at"])
             if self.store.clock() - last > timedelta(minutes=self.config.idle_minutes):
-                self.end_session()
+                return session
+        return None
+
+    def end_if_idle(self):
+        """Nothing runs in the background, so an idle session ends at your next chat (or `session end`)."""
+        if self.idle_session():
+            self.end_session()
 
     def session_id(self):
         """The open session; a new one if there's none, or if the open one sat idle too long."""

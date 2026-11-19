@@ -114,20 +114,28 @@ def cmd_beliefs(agent, a):
 
 
 def cmd_intentions(agent, a):
-    current = bdi.pick_intention(agent.store)          # plain code, the same pick a chat turn makes
+    """Read-only, like every list: no model call, nothing written."""
+    desire, current = bdi.choose(agent.store)          # plain code, the same pick a chat turn makes
+    live = {d["key"] for d in bdi.live_desires(agent.store)}
     for i in agent.store.current("intentions", "flag IS NOT 'removed'"):
-        mark = "  (current)" if current and i["id"] == current["id"] else ""
-        print(f"#{i['id']}  {i['status']}  {i['text']}{mark}")
+        if i["serves"] in live:                         # not one whose desire you dropped
+            mark = "  (current)" if current and i["id"] == current["id"] else ""
+            print(f"#{i['id']}  {i['status']}  {i['text']}{mark}")
+    if desire is not None and current is None:
+        print(f"(new)  active  {desire['text']}  (current; your next chat turn writes it down)")
     return 0
 
 
 def cmd_curious(agent, a):
     store = agent.store
-    if a.action == "list":
-        agent.end_if_idle()                  # so yesterday's session has been read
+    if a.action == "list":                   # read-only: it never ends a session or calls the model
         for q in curiosity.open_questions(store):
             print(f"#{q['id']}  {q['text']}\n      \"{q['quote']}\" (turn {q['source_turn']}, "
                   f"session {q['session_id']})")
+        idle = agent.idle_session()
+        if idle:
+            print(f"Session {idle['id']} has been idle over {agent.config.idle_minutes} minutes but is still "
+                  "open; curiosity reads it once it ends.\nTo end it now: python -m starter_agent session end")
         return 0
     act = curiosity.drop if a.action == "drop" else (lambda s, i: curiosity.adopt(s, i, a.rank))
     result = act(store, a.id) if a.id is not None else None

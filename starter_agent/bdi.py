@@ -57,18 +57,25 @@ def drop_desire(store, desire_id):
 
 # --- Deliberate, step 1: pick the intention in plain code ----------------------------------------
 
-def pick_intention(store):
-    """The intention serving the highest-ranked live desire whose intention isn't done."""
+def choose(store):
+    """Read-only: (your highest-ranked live desire whose intention isn't done, its intention or None
+    if none is written yet), or (None, None) when no desire is live."""
     for desire in live_desires(store):
         found = store.current("intentions", "serves=? AND flag IS NOT 'removed'", (desire["key"],))
         if found and found[0]["status"] == "done":
             continue
-        if found:
-            return found[0]
-        new_id = store.append("intentions", {"text": desire["text"], "serves": desire["key"],
-                                             "status": "active", "evidence": "[]", "flag": None})
-        return store.get("intentions", new_id)
-    return None                          # no live desire: the agent simply answers
+        return desire, (found[0] if found else None)
+    return None, None
+
+
+def pick_intention(store):
+    """The current intention, written down first if it's new. None: no live desire, so just answer."""
+    desire, intention = choose(store)
+    if desire is None or intention is not None:
+        return intention
+    new_id = store.append("intentions", {"text": desire["text"], "serves": desire["key"],
+                                         "status": "active", "evidence": "[]", "flag": None})
+    return store.get("intentions", new_id)
 
 
 def current_beliefs(store):

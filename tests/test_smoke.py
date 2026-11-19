@@ -4,7 +4,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from conftest import Clock
+from starter_agent.cli import main
 from starter_agent.config import Config
+from starter_agent.models import FakeModel
+from starter_agent.store import Store
 
 
 def test_demo_runs_with_no_key(cli, capsys):
@@ -24,22 +28,45 @@ def test_demo_runs_with_no_key(cli, capsys):
     assert cli("curious", "list") == 0 and capsys.readouterr().out == ""
 
 
-def test_idle_gap_ends_the_session_and_runs_curiosity(cli, capsys):
+def test_idle_gap_ends_the_session_at_the_next_chat_and_curious_list_only_says_so(cli, capsys):
     cli("chat", "why is it raining?")
     capsys.readouterr()
     cli.clock.advance(29)
-    cli("curious", "list")
-    assert "raining" not in capsys.readouterr().out       # not idle long enough: still open
+    assert cli("curious", "list") == 0 and capsys.readouterr().out == ""      # not idle long enough
     cli.clock.advance(2)
-    cli("curious", "list")
-    assert "why is it raining?" in capsys.readouterr().out    # idle: ended and read, without a new message
-    cli("chat", "hello again")
+    assert cli("curious", "list") == 0
+    out = capsys.readouterr().out
+    assert "raining" not in out                                               # not ended, not read
+    assert "Session 1 has been idle" in out and "python -m starter_agent session end" in out
+    cli("chat", "hello again")                     # the next chat ends the idle session, and curiosity reads it
     capsys.readouterr()
     cli("session", "list")
     listing = capsys.readouterr().out.splitlines()
     assert len(listing) == 2 and "(open)" not in listing[0] and "(open)" in listing[1]
     cli("curious", "list")
     assert "why is it raining?" in capsys.readouterr().out
+
+
+def test_curious_list_and_intentions_never_call_the_model_or_write(tmp_path, capsys):
+    clock, model = Clock(), FakeModel()            # the demo model, recording every call
+    run = lambda *argv: main(["--config", str(tmp_path / "agent.json"), "--db", str(tmp_path / "agent.db"),
+                              *argv], model=model, clock=clock)
+    run("desire", "add", "Weigh the mice")         # desire #1
+    run("chat", "why do the mice lose weight?")    # writes intention #1, serving desire #1
+    run("desire", "drop", "1")
+    run("desire", "add", "Replicate figure 3")     # desire #3: no intention written yet
+    clock.advance(31)                              # the session is now idle, and still open
+    capsys.readouterr()
+    calls, before = len(model.calls), list(Store(str(tmp_path / "agent.db"), clock).db.iterdump())
+    assert run("intentions") == 0
+    assert capsys.readouterr().out == (
+        "(new)  active  Replicate figure 3  (current; your next chat turn writes it down)\n")   # not #1
+    assert run("curious", "list") == 0 and "is still open" in capsys.readouterr().out
+    assert len(model.calls) == calls                                   # no model call
+    assert list(Store(str(tmp_path / "agent.db"), clock).db.iterdump()) == before   # no row written
+    run("chat", "hello")                           # the next chat ends the idle session and writes it down
+    capsys.readouterr()
+    assert run("intentions") == 0 and capsys.readouterr().out == "#2  active  Replicate figure 3  (current)\n"
 
 
 def test_default_settings_need_nothing_installed():

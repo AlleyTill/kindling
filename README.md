@@ -91,7 +91,7 @@ Run every command from inside this folder.
 | `session delete ID` | delete a session and what it alone taught the agent (asks first; `--yes` skips) |
 | `desire add "TEXT" [--rank N]` | something you want the agent to work toward; rank 1 is the top |
 | `desire list` / `desire rank ID N` / `desire drop ID` | your live desires; change a rank; stop one |
-| `intentions` | what the agent is working on: each serves a desire, and one is current |
+| `intentions` | what the agent is working on: each serves a live desire, and one is current |
 | `beliefs` / `beliefs history ID` | current beliefs; every version of one, with its evidence |
 | `curious list` | open questions, each with the agent's own words it came from |
 | `curious drop ID` / `curious adopt ID [--rank N]` | turn a question down (it won't come back); make it a desire |
@@ -149,7 +149,7 @@ To delete everything, delete `agent.db`.
 | `api_key_env` | blank | the NAME of the variable holding your key |
 | `embedder` | `hash` | `hash` (needs nothing) or `bge-small` |
 | `recall_budget_tokens` | 8000 | recalled sessions per turn, counted as about 4 characters a token |
-| `idle_minutes` | 30 | a session ends after this long without a message (nothing runs in the background, so it's noticed the next time you `chat` or run `curious list`) |
+| `idle_minutes` | 30 | a session ends after this long without a message. Nothing runs in the background, so it ends at your next `chat` or `session end`; `curious list` tells you when one is waiting |
 | `question_queue` | 20 | the most open questions; past it, the oldest expires (it isn't deleted) |
 | `dedupe_similarity` | 0.85 | a new question this close to an open or dropped one is skipped |
 | `auto_adopt` | false | turn new questions into desires without asking you |
