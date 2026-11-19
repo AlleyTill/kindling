@@ -14,6 +14,9 @@ A small agent you run on your own computer. It:
 **Status: a rough first skeleton** (19 November 2026). It runs and its tests pass, **tested on Linux with
 Python 3.12 only**. No student has set it up from this README yet, so expect rough edges. **Licence:** the
 Liberation Labs Hippocratic License 3.0 (see [LICENSE.md](LICENSE.md)).
+The licence's AI-welfare terms are written for persistent agents. As shipped, Kindling is a command-line tool, and `session
+delete` is you removing your own data. If you grow it into a long-running agent, read those terms first: they're
+part of what you're building toward.
 
 It's deliberately small (about 1,400 lines of Python, standard library only) so you can read all of it in
 an afternoon and change any of it.
