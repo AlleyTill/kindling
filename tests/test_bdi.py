@@ -170,7 +170,7 @@ def test_bdi_4b_intention_done_needs_real_evidence(make_agent):
     bdi.add_desire(agent.store, "Replicate figure 3")
     agent.handle("Is it done?")                          # turn 1: cites a ghost turn
     agent.handle("Now?")                                 # turn 3: cites nothing
-    assert bdi.pick_intention(agent.store)["status"] == "active"
+    assert [i["status"] for i in agent.store.current("intentions")] == ["active"]
     assert "999" in logged(agent.store, "rejected intention_done")[0]
     agent.handle("It is done.")                          # turn 5, cited as the evidence
     (done,) = agent.store.current("intentions")
@@ -196,11 +196,12 @@ def test_bdi_6b_delete_undoes_a_change_made_only_in_that_session(make_agent):
     agent.delete_session(s2)
     versions = store.history("beliefs", old)
     assert [v["id"] for v in versions[:2]] == [old, changed] and versions[1]["flag"] == "removed"
-    (now,) = bdi.current_beliefs(store)
+    beliefs = bdi.current_beliefs(store)
+    assert len(beliefs) == 1
+    now = beliefs[0]
     assert (now["text"], now["confidence"], json.loads(now["evidence"])) == ("Weighing is on Mondays", 0.8, [t1])
     assert now["flag"] == "review" and now["supersedes"] == changed
-    intention = bdi.pick_intention(store)
-    assert (intention["status"], json.loads(intention["evidence"])) == ("active", [])
+    assert [(i["status"], json.loads(i["evidence"])) for i in store.current("intentions")] == [("active", [])]
     dump = "\n".join(store.db.iterdump())
     assert secret not in dump and "Fridays" not in dump
 

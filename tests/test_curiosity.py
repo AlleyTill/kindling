@@ -131,7 +131,7 @@ def test_curiosity_5_full_queue_expires_oldest_and_deletes_nothing(make_agent):
     assert len(queued) == 21
     waiting = curiosity.open_questions(agent.store)
     assert len(waiting) == 20 and waiting[0]["text"] == texts[1]
-    assert agent.store.latest("questions", queued[0])["status"] == "expired"
+    assert [q["status"] for q in agent.store.history("questions", queued[0])] == ["open", "expired"]
     assert [q["id"] for q in questions(agent.store, "supersedes IS NULL")] == queued   # every original row is there
     assert len(questions(agent.store)) == 22                                          # plus the expired version
 
@@ -151,4 +151,4 @@ def test_curiosity_6_adoption_needs_curious_adopt(make_agent, cli, tmp_path, cap
                        auto_adopt=True)
     agent.handle("The loss spiked.")
     agent.end_session()
-    assert agent.store.db.execute("SELECT source FROM desires").fetchall()[0][0] == "curiosity"
+    assert [row[0] for row in agent.store.db.execute("SELECT source FROM desires")] == ["curiosity"]

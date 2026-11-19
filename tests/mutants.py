@@ -171,6 +171,8 @@ MUTANTS = [
     # --- The command line --------------------------------------------------------------------------------
     ("`desire rank ID N` sets rank N", "starter_agent/cli.py", [(
         "bdi.rerank_desire(store, desire_id, new_rank)", "bdi.rerank_desire(store, desire_id, 1)")]),
+    ("`intentions` marks the current pick", "starter_agent/cli.py", [(
+        "current = bdi.pick_intention(agent.store)", "current = None")]),
     ("`session delete` asks first", "starter_agent/cli.py", [("if not a.yes and ask(", "if False and ask(")]),
     ("`beliefs history` shows every version", "starter_agent/cli.py", [(
         'rows = agent.store.history("beliefs", a.id) if a.id is not None else []',
@@ -194,6 +196,7 @@ def pytest_sessionfinish(session, exitstatus):
 def run_tests(folder):
     """{"exit": pytest's exit code, "ran": tests collected, "failed": [(test, phase, exception name)]}."""
     report = folder / "failures.json"
+    report.unlink(missing_ok=True)                 # never read an old report as this run's
     env = {**os.environ, "MUTANT_REPORT": str(report), "PYTHONPATH": str(folder.parent / "plugin"),
            "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "mutant_plugin"],
@@ -204,7 +207,7 @@ def run_tests(folder):
 
 def mutate(snapshot, number, file, swaps):
     folder = snapshot.parent / f"mutant_{number:02d}"
-    shutil.copytree(snapshot, folder)
+    shutil.copytree(snapshot, folder, ignore=shutil.ignore_patterns("failures.json"))
     path = folder / file
     text = path.read_text()
     for old, new in swaps:
