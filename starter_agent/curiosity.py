@@ -1,7 +1,8 @@
 """Curiosity (plan section 6, Lyra's design): notice the questions the agent raised and didn't answer.
 
 - Once per session, when it ends: one model call reads the agent's OWN turns from that session.
-- Every question must quote 2 to 20 words found word for word in the turn it cites, or it is dropped.
+- Every question must quote 2 to 20 whole words found word for word in the agent turn it cites, or
+  it is dropped.
 - A question too close (similarity 0.85) to an open OR dropped one is skipped, so a question you
   turned down doesn't come back next week in new words.
 - At most 20 open questions: the oldest open one is marked `expired`, never deleted.
@@ -10,6 +11,7 @@
   unless you switch on auto_adopt in agent.json (off by default).
 """
 import json
+import re
 
 from . import bdi
 from .embed import cosine
@@ -29,11 +31,11 @@ def check(question, my_turns):
     text, quote, turn = question.get("text"), question.get("quote"), question.get("turn")
     if not isinstance(text, str) or not text.strip():
         return "no question text"
-    if isinstance(turn, bool) or turn not in my_turns:
+    if type(turn) is not int or turn not in my_turns:
         return f"turn {turn!r} is not one of the agent's turns in this session"
     if not isinstance(quote, str) or not 2 <= len(quote.split()) <= 20:
         return "the quote must be 2 to 20 words"
-    if quote not in my_turns[turn]:
+    if not re.search(r"(?<!\w)" + re.escape(quote) + r"(?!\w)", my_turns[turn]):   # whole words only
         return f"the quote is not found word for word in turn {turn}"
     return None
 

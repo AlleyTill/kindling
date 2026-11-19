@@ -34,6 +34,8 @@ def test_curiosity_1_unresolved_question_appears_with_phrase_and_turn(make_agent
     assert queued == [q["id"]]
     assert (q["quote"], q["source_turn"], q["session_id"]) == (PUZZLE, 2, 1)
     assert len(agent.model.calls) == 4                   # three turns plus ONE curiosity call
+    assert agent.end_session() == [] and len(agent.model.calls) == 4    # an ended session isn't read twice
+    assert "The loss spiked again" not in agent.model.calls[-1][-1]["content"]   # only the agent's turns
 
 
 # 2. The same, but the agent answers it two turns later: no question appears.
@@ -66,6 +68,28 @@ def test_curiosity_3_question_with_unfound_phrase_is_dropped(make_agent):
     assert [q["text"] for q in questions(agent.store)] == ["Real one"]
     reasons = [r[0] for r in agent.store.db.execute("SELECT reason FROM log WHERE kind='rejected question'")]
     assert len(reasons) == 4 and all(reasons)
+
+
+# 3b. The quote is 2 to 20 whole words, from one of the AGENT's turns in this session.
+def test_curiosity_3b_quote_limits(make_agent):
+    long_turn = ("I am not sure why the loss spikes at step four hundred when the learning rate warm up "
+                 "ends and the batch size doubles at once")              # 24 words
+    words = long_turn.split()
+
+    def reader(prompt):
+        turn = max(agent_turns(prompt))
+        return json.dumps({"questions": [
+            {"text": "twenty words", "quote": " ".join(words[:20]), "turn": turn},
+            {"text": "twenty-one words", "quote": " ".join(words[:21]), "turn": turn},
+            {"text": "two words", "quote": "loss spikes", "turn": turn},
+            {"text": "cut words", "quote": "ot sure wh", "turn": turn},
+            {"text": "the user's words", "quote": "my training run", "turn": turn - 1},
+        ]})
+    agent = make_agent(fn=scripted([say(long_turn)], reader), dedupe_similarity=1.01)
+    agent.handle("Look at my training run.")               # turn 1; the agent's reply is turn 2
+    agent.end_session()
+    assert [q["text"] for q in questions(agent.store)] == ["twenty words", "two words"]
+    assert len(agent.store.db.execute("SELECT * FROM log WHERE kind='rejected question'").fetchall()) == 3
 
 
 # 4. A dropped question, reworded in a later session: it doesn't come back (nor does an open one).
