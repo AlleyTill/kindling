@@ -61,41 +61,44 @@ def ensure_vectors(store, embedder):
                              [(row["id"], embedder.name, to_blob(v)) for row, v in zip(missing, vecs)])
 
 
-def recall(store, embedder, query, budget=8000, exclude=None):
-    """Return (pack, session_ids): the most relevant past sessions, whole, oldest first."""
+def fuse(dense, lexical, k=60):
+    """Reciprocal rank fusion of two score lists (one score per turn): dense weighted 2, BM25 1.
+    A turn with no word in common with the query gets nothing from BM25."""
+    fused = defaultdict(float)
+    for i, rank in ranks(dense).items():
+        fused[i] += 2 / (k + rank)
+    for i, rank in ranks(lexical, positive_only=True).items():
+        fused[i] += 1 / (k + rank)
+    return fused
+
+
+def rank_sessions(store, embedder, query, exclude=None):
+    """[(session id, score)], best first. A session scores the sum of its best two user turns."""
     ensure_vectors(store, embedder)
     rows = store.db.execute(
         "SELECT t.id, t.session_id, t.text, v.vec FROM turns t JOIN vectors v "
         "ON v.turn_id = t.id AND v.embedder = ? WHERE t.role = 'user' AND t.session_id IS NOT ?",
         (embedder.name, exclude)).fetchall()
     if not rows:
-        return "", []
-
-    # 1. Two rankings of the user turns, fused.
-    lexical = bm25(words(query), [words(row["text"]) for row in rows])
+        return []
     q = embedder.embed([query])[0]
     dense = [cosine(q, from_blob(row["vec"])) for row in rows]
-    fused = defaultdict(float)
-    for i, rank in ranks(dense).items():
-        fused[i] += 2 / (60 + rank)
-    for i, rank in ranks(lexical, positive_only=True).items():
-        fused[i] += 1 / (60 + rank)
-
-    # 2. Each session scores the sum of its best two turns.
+    lexical = bm25(words(query), [words(row["text"]) for row in rows])
     per_session = defaultdict(list)
-    for i, score in fused.items():
+    for i, score in fuse(dense, lexical).items():
         per_session[rows[i]["session_id"]].append(score)
-    session_score = {sid: sum(sorted(s, reverse=True)[:2]) for sid, s in per_session.items()}
+    scores = {sid: sum(sorted(s, reverse=True)[:2]) for sid, s in per_session.items()}
+    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
 
-    # 3. Whole sessions, best first, while they fit; a session that doesn't fit is skipped, never cut.
+
+def recall(store, embedder, query, budget=8000, exclude=None):
+    """Return (pack, session_ids): the most relevant past sessions, whole, oldest first."""
     chosen, used = [], 0
-    for sid in sorted(session_score, key=lambda s: (-session_score[s], s)):
+    for sid, _ in rank_sessions(store, embedder, query, exclude):
         block = render_session(store, sid)
         cost = estimate_tokens(block + "\n\n")
-        if used + cost <= budget:
+        if used + cost <= budget:        # a session that doesn't fit is skipped, never cut
             chosen.append((sid, block))
             used += cost
-    chosen.sort()                       # session ids grow with time, so this is oldest to newest
-
-    # 4. The pack and its session ids.
+    chosen.sort()                        # session ids grow with time, so this is oldest to newest
     return "\n\n".join(block for _, block in chosen), [sid for sid, _ in chosen]

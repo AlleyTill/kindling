@@ -1,7 +1,11 @@
-"""Plan section 5's three tests (Nexus)."""
+"""Plan section 5's three tests (Nexus), plus the fusion and session scoring it specifies."""
+import math
+
+import pytest
+
 from conftest import add_session
 from starter_agent.embed import HashEmbedder
-from starter_agent.recall import estimate_tokens, recall, render_session
+from starter_agent.recall import estimate_tokens, fuse, rank_sessions, recall, render_session
 
 TOPICS = ["sourdough starters", "bicycle gearing", "tidal pools", "jazz chord voicings", "glacier retreat",
           "medieval bookbinding", "solar panel inverters", "beekeeping in winter", "orbital mechanics",
@@ -62,3 +66,44 @@ def test_recall_3_pack_within_budget_and_sessions_whole(make_agent):
         headers = pack.count("=== Session ")
         assert headers == len(ids) and ids == sorted(ids)
     assert recall(store, HashEmbedder(), "glacier", budget=10**6)[1] == sorted(sessions)
+
+
+class StubEmbedder:
+    """Dense similarity chosen by the test: each listed text gets that cosine with the query."""
+    name = "stub"
+
+    def __init__(self, cosine_with_query):
+        self.cosine = cosine_with_query
+
+    def embed(self, texts):
+        return [[c, math.sqrt(1 - c * c)] if (c := self.cosine.get(t)) is not None else [1.0, 0.0]
+                for t in texts]
+
+
+# 4. Reciprocal rank fusion with k = 60, dense weighted 2 and BM25 1; BM25 ranks only turns it matched.
+def test_recall_4_fusion_is_rrf_k60_dense_2_bm25_1():
+    fused = fuse(dense=[0.9, 0.5, 0.1], lexical=[0.0, 2.0, 1.0])
+    assert fused[0] == pytest.approx(2 / 61)
+    assert fused[1] == pytest.approx(2 / 62 + 1 / 61)
+    assert fused[2] == pytest.approx(2 / 63 + 1 / 62)
+
+
+def test_recall_4b_dense_outweighs_bm25_in_recall(make_agent):
+    store = make_agent().store
+    words_win, _ = add_session(store, [("user", "zebra zebra")])                         # BM25's first
+    meaning_wins, _ = add_session(store, [("user", "zebra seen near the river at dawn, with many others")])
+    embedder = StubEmbedder({"zebra zebra": 0.5, "zebra seen near the river at dawn, with many others": 0.9})
+    assert [sid for sid, _ in rank_sessions(store, embedder, "zebra")] == [meaning_wins, words_win]
+
+
+# 5. A session scores the sum of its best two turns: not its best one, not all of them.
+def test_recall_5_session_scored_by_its_best_two_turns(make_agent):
+    store = make_agent().store
+    one, _ = add_session(store, [("user", "a1")])
+    two, _ = add_session(store, [("user", "b1"), ("user", "b2")])
+    five, _ = add_session(store, [("user", f"c{i}") for i in range(1, 6)])
+    embedder = StubEmbedder({"a1": .99, "b1": .98, "b2": .97, "c1": .96, "c2": .95, "c3": .94, "c4": .93,
+                             "c5": .92})
+    ranked = rank_sessions(store, embedder, "nothing in common")      # no shared words: dense only
+    assert [sid for sid, _ in ranked] == [two, five, one]
+    assert ranked[0][1] == pytest.approx(2 / 62 + 2 / 63)
