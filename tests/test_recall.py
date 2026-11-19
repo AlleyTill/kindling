@@ -5,7 +5,7 @@ import pytest
 
 from conftest import add_session
 from starter_agent.embed import HashEmbedder
-from starter_agent.recall import estimate_tokens, fuse, rank_sessions, recall, render_session
+from starter_agent.recall import Memory, Recalled, estimate_tokens, fuse, rank_sessions, recall, render_session
 
 TOPICS = ["sourdough starters", "bicycle gearing", "tidal pools", "jazz chord voicings", "glacier retreat",
           "medieval bookbinding", "solar panel inverters", "beekeeping in winter", "orbital mechanics",
@@ -145,3 +145,31 @@ def test_recall_4c_the_dense_index_scores_the_query(make_agent):
     near, _ = add_session(store, [("user", "alpha")])
     embedder = PointEmbedder({"where is my cat": [1.0, 0.0, 0.0], "alpha": [0.9, 0.0, 0.1], "bravo": [0.1, 0.0, 0.9]})
     assert [sid for sid, _ in rank_sessions(store, embedder, "where is my cat")] == [near, far]
+
+
+# 6. The narrow interface (Nexus): Memory.recall(query, budget_tokens) hands back the packed sessions with
+#    their scores and says what made the scores. The open session is never recalled.
+def test_recall_6_memory_recall_is_the_narrow_interface(make_agent):
+    store = make_agent().store
+    for topic in TOPICS[:4]:
+        add_session(store, filler(topic))
+    now = store.start_session()
+    store.add_turn(now, "user", "tidal pools again")                  # open: already in the model's context
+    got = Memory(store, HashEmbedder()).recall("tidal pools", 400)
+    pack, ids = recall(store, HashEmbedder(), "tidal pools", budget=400, exclude=now)
+    assert (got.text, [sid for sid, _ in got.sessions]) == (pack, ids) and now not in ids
+    scores = dict(rank_sessions(store, HashEmbedder(), "tidal pools", exclude=now))
+    assert got.sessions == [(sid, scores[sid]) for sid in ids]
+    assert got.scored_by == "RRF of BM25 and the hash-256 embedder"
+
+
+def test_recall_6b_another_retriever_can_be_swapped_in(make_agent):
+    class OwnRetriever:
+        def recall(self, query, budget_tokens):
+            self.asked = (query, budget_tokens)
+            return Recalled("=== Session 7 ===\n[turn 70] user: from my own retriever", [(7, 1.0)], "by hand")
+    agent = make_agent(fn=lambda messages: "ok")
+    agent.memory = OwnRetriever()
+    agent.handle("hello")
+    assert agent.memory.asked == ("hello", 8000)
+    assert "[turn 70] user: from my own retriever" in agent.model.calls[-1][-1]["content"]

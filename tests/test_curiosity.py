@@ -1,5 +1,6 @@
 """Plan section 6's six tests (Lyra)."""
 import json
+import re
 
 from conftest import agent_turns, say, scripted
 from starter_agent import curiosity
@@ -125,6 +126,8 @@ def test_curiosity_4_dropped_question_reworded_does_not_return(make_agent):
     assert [q["text"] for q in curiosity.open_questions(agent.store)] == [
         "Is the validation set too small?", "Should the mice be weighed twice a week?"]
     assert agent.store.latest("questions", spike["id"])["status"] == "dropped"
+    skipped = [r[0] for r in agent.store.db.execute("SELECT reason FROM log WHERE kind='rejected question'")]
+    assert len(skipped) == 2 and all(re.search(r"\(0\.\d\d similar by hash-256\)$", r) for r in skipped)
 
 
 # 5. The queue at 20: the oldest open question becomes `expired`, and nothing is deleted.

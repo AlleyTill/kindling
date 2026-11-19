@@ -61,7 +61,10 @@ def test_every_command(cli, capsys, monkeypatch, tmp_path):
     assert cli("desire", "drop", "5") == 0 and cli("desire", "list") == 0
     assert "(curiosity)" not in out()
     # recall, sessions, log
-    assert cli("recall", "rats", "sample") == 0 and out().startswith("sessions: [1, 2, 3]\n")
+    assert cli("recall", "rats", "sample") == 0
+    scores = out().splitlines()[:3]                                   # every score names its embedder
+    assert [line.split()[1] for line in scores] == ["1", "2", "3"]
+    assert all(line.endswith("(RRF of BM25 and the hash-256 embedder)") for line in scores)
     assert cli("session", "list") == 0 and len(out().splitlines()) == 3
     assert cli("session", "show", "1") == 0 and "[turn 1] user: remember: the sample is 12 rats" in out()
     assert cli("log") == 0
@@ -121,3 +124,11 @@ def test_times_are_shown_in_local_time(cli, capsys, pacific):
     assert capsys.readouterr().out == "#1  2026-11-19 01:00 to 2026-11-19 01:00  hello\n"
     assert cli("session", "show", "1") == 0
     assert capsys.readouterr().out.startswith("=== Session 1, 2026-11-19 01:00 to 2026-11-19 01:00 ===")
+
+
+def test_the_hash_embedder_is_named_once_at_startup(cli, capsys, tmp_path):
+    assert cli("beliefs") == 0
+    err = capsys.readouterr().err
+    assert err.count("the hash embedder is in use") == 1 and "don't measure the memory design" in err
+    (section,) = re.findall(r"See '([^']+)' in the README", err)
+    assert section in (Path(__file__).parent.parent / "README.md").read_text()

@@ -4,7 +4,7 @@
                               ^                              |
                               +---- CURIOSITY (between sessions)
 
-RECALL      recall.py   the past sessions that matter, whole
+RECALL      recall.py   the past sessions that matter, whole (Memory.recall: swap in your own)
 DELIBERATE  bdi.py      pick the intention; gather the current beliefs
 ACT         models.py   ONE model call: a reply plus a JSON block of belief changes
 RECORD      store.py    the turns, and every belief change that passes bdi's checks
@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import bdi, curiosity
 from .models import split_json
-from .recall import recall, render_session
+from .recall import Memory, render_session
 
 
 def utc_now():
@@ -22,8 +22,9 @@ def utc_now():
 
 
 class Agent:
-    def __init__(self, store, model, embedder, config):
+    def __init__(self, store, model, embedder, config, memory=None):
         self.store, self.model, self.embedder, self.config = store, model, embedder, config
+        self.memory = memory or Memory(store, embedder)      # anything with recall(query, budget_tokens)
 
     def idle_session(self):
         """The open session if it has sat idle past the gap, else None. Read-only."""
@@ -52,15 +53,16 @@ class Agent:
         turn = self.store.add_turn(sid, "user", message)
         try:
             # RECALL: past sessions only; this one is already in context below.
-            pack, recalled = recall(self.store, self.embedder, message,
-                                    self.config.recall_budget_tokens, exclude=sid)
+            pack = self.memory.recall(message, self.config.recall_budget_tokens)
+            recalled = [session for session, _ in pack.sessions]
 
             # DELIBERATE: the intention is picked in code, never by the model.
             intention = bdi.pick_intention(self.store)
             beliefs = bdi.current_beliefs(self.store)
 
             # ACT: one call.
-            raw = self.model.complete(bdi.act_messages(pack, beliefs, intention, render_session(self.store, sid)))
+            raw = self.model.complete(bdi.act_messages(pack.text, beliefs, intention,
+                                                       render_session(self.store, sid)))
         except BaseException:              # no reply (the model couldn't be reached, or you pressed Ctrl-C):
             self.store.take_back(turn)     # a turn is kept only with its reply, so a retry isn't stored twice
             raise

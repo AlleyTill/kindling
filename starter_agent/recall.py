@@ -8,9 +8,11 @@
 4. Return the pack and the session ids, so Record can check what was cited.
 
 Only the user's turns are indexed. No model is called here except the embedder.
+The agent sees only Memory.recall(query, budget_tokens) at the bottom: swap in your own retriever there.
 """
 import math
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 
 from .embed import cosine, from_blob, to_blob, words
 from .store import local
@@ -93,14 +95,45 @@ def rank_sessions(store, embedder, query, exclude=None):
     return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
 
 
-def recall(store, embedder, query, budget=8000, exclude=None):
-    """Return (pack, session_ids): the most relevant past sessions, whole, oldest first."""
+def pack_sessions(store, ranked, budget):
+    """[(session id, its text)]: whole sessions from `ranked` (best first) that fit the budget, oldest first."""
     chosen, used = [], 0
-    for sid, _ in rank_sessions(store, embedder, query, exclude):
+    for sid, _ in ranked:
         block = render_session(store, sid)
         cost = estimate_tokens(block + "\n\n")
         if used + cost <= budget:        # a session that doesn't fit is skipped, never cut
             chosen.append((sid, block))
             used += cost
     chosen.sort()                        # session ids grow with time, so this is oldest to newest
+    return chosen
+
+
+def recall(store, embedder, query, budget=8000, exclude=None):
+    """Return (pack, session_ids): the most relevant past sessions, whole, oldest first."""
+    chosen = pack_sessions(store, rank_sessions(store, embedder, query, exclude), budget)
     return "\n\n".join(block for _, block in chosen), [sid for sid, _ in chosen]
+
+
+@dataclass
+class Recalled:
+    text: str              # the sessions, whole and oldest first: what the model is shown
+    sessions: list         # [(session id, score)], oldest first
+    scored_by: str         # what made the scores; print it beside them
+
+
+class Memory:
+    """The one question the agent asks its memory (Nexus's narrow interface): recall(query, budget_tokens).
+    To try another retriever, write a class with this method and pass it as Agent(..., memory=yours)."""
+
+    def __init__(self, store, embedder):
+        self.store, self.embedder = store, embedder
+
+    def recall(self, query, budget_tokens):
+        """The past sessions that matter for `query`, whole, within the budget. The open session is left
+        out: it's already in the model's context."""
+        current = self.store.open_session()
+        ranked = rank_sessions(self.store, self.embedder, query, exclude=current["id"] if current else None)
+        scores = dict(ranked)
+        chosen = pack_sessions(self.store, ranked, budget_tokens)
+        return Recalled("\n\n".join(block for _, block in chosen), [(sid, scores[sid]) for sid, _ in chosen],
+                        f"RRF of BM25 and the {self.embedder.name} embedder")

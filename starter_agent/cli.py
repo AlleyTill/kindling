@@ -1,19 +1,28 @@
 """The command line. Run `python -m starter_agent --help`."""
 import argparse
 import json
+import sys
 
 from . import bdi, curiosity
 from .agent import Agent, utc_now
 from .config import load_config
-from .embed import make_embedder
+from .embed import HashEmbedder, make_embedder
 from .models import make_model
-from .recall import recall, render_session
+from .recall import render_session
 from .store import Store, local
+
+
+HASH_NOTE = ("Note: the hash embedder is in use (the default). It matches shared words and spellings, not "
+             "meaning, so its recall and similarity scores don't measure the memory design. "
+             "See 'Optional: better recall' in the README.")
 
 
 def build(config, model=None, clock=utc_now):
     store = Store(config.db, clock)
-    return Agent(store, model or make_model(config), make_embedder(config.embedder), config)
+    embedder = make_embedder(config.embedder)
+    if isinstance(embedder, HashEmbedder):
+        print(HASH_NOTE, file=sys.stderr)                 # once, at startup
+    return Agent(store, model or make_model(config), embedder, config)
 
 
 def ask(prompt):
@@ -149,10 +158,10 @@ def cmd_curious(agent, a):
 
 
 def cmd_recall(agent, a):
-    open_session = agent.store.open_session()
-    pack, ids = recall(agent.store, agent.embedder, " ".join(a.query), agent.config.recall_budget_tokens,
-                       exclude=open_session["id"] if open_session else None)
-    print(f"sessions: {ids}\n\n{pack}")
+    pack = agent.memory.recall(" ".join(a.query), agent.config.recall_budget_tokens)
+    for session, score in pack.sessions:
+        print(f"session {session}  score {score:.4f}  ({pack.scored_by})")
+    print(f"\n{pack.text}" if pack.sessions else "Nothing recalled.")
     return 0
 
 

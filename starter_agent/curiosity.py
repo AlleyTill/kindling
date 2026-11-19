@@ -41,14 +41,15 @@ def check(question, my_turns):
 
 
 def duplicate_of(store, embedder, text, threshold):
-    """The id of an open or dropped question at least `threshold` similar to `text`, else None."""
+    """(id, similarity) of an open or dropped question at least `threshold` similar to `text`, else None."""
     pool = store.current("questions", "status IN ('open', 'dropped')")
     if not pool:
         return None
     new, *old = embedder.embed([text] + [q["text"] for q in pool])
     for question, vec in zip(pool, old):
-        if cosine(new, vec) >= threshold:
-            return question["id"]
+        similarity = cosine(new, vec)
+        if similarity >= threshold:
+            return question["id"], similarity
     return None
 
 
@@ -78,7 +79,7 @@ def run(store, model, embedder, config, session_id):
         problem = check(question, my_turns)
         if not problem:
             twin = duplicate_of(store, embedder, question["text"], config.dedupe_similarity)
-            problem = twin and f"too close to question #{twin}"
+            problem = twin and f"too close to question #{twin[0]} ({twin[1]:.2f} similar by {embedder.name})"
         if problem:
             store.log(session_id, "rejected question", problem, json.dumps(question))
             continue
