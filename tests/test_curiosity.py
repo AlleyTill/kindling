@@ -38,6 +38,16 @@ def test_curiosity_1_unresolved_question_appears_with_phrase_and_turn(make_agent
     assert "The loss spiked again" not in agent.model.calls[-1][-1]["content"]   # only the agent's turns
 
 
+# 1b. Curiosity reads only the session that ended, not the agent's turns from earlier sessions.
+def test_curiosity_1b_reads_only_the_session_that_ended(make_agent):
+    agent = make_agent(fn=scripted([say("I'm not sure why the mice lose weight."), say("Let me check the feed logs.")]))
+    agent.handle("The mice lost weight.")                # session 1: turns 1 and 2
+    agent.end_session()
+    agent.handle("The feed logs?")                       # session 2: turns 3 and 4
+    agent.end_session()
+    assert agent_turns(agent.model.calls[-1][-1]["content"]) == {4: "Let me check the feed logs."}
+
+
 # 2. The same, but the agent answers it two turns later: no question appears.
 def test_curiosity_2_answered_question_does_not_appear(make_agent):
     agent = make_agent(fn=scripted([say(PUZZLE + "."), say("Let me check the data loader."),
@@ -83,13 +93,14 @@ def test_curiosity_3b_quote_limits(make_agent):
             {"text": "twenty-one words", "quote": " ".join(words[:21]), "turn": turn},
             {"text": "two words", "quote": "loss spikes", "turn": turn},
             {"text": "cut words", "quote": "ot sure wh", "turn": turn},
+            {"text": "case changed", "quote": "i am not sure why", "turn": turn},       # the turn says "I am"
             {"text": "the user's words", "quote": "my training run", "turn": turn - 1},
         ]})
     agent = make_agent(fn=scripted([say(long_turn)], reader), dedupe_similarity=1.01)
     agent.handle("Look at my training run.")               # turn 1; the agent's reply is turn 2
     agent.end_session()
     assert [q["text"] for q in questions(agent.store)] == ["twenty words", "two words"]
-    assert len(agent.store.db.execute("SELECT * FROM log WHERE kind='rejected question'").fetchall()) == 3
+    assert len(agent.store.db.execute("SELECT * FROM log WHERE kind='rejected question'").fetchall()) == 4
 
 
 # 4. A dropped question, reworded in a later session: it doesn't come back (nor does an open one).

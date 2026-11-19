@@ -68,6 +68,23 @@ def test_recall_3_pack_within_budget_and_sessions_whole(make_agent):
     assert recall(store, HashEmbedder(), "glacier", budget=10**6)[1] == sorted(sessions)
 
 
+# 3b. The budget's exact edge, counting the blank line between sessions: two sessions that fill it exactly
+#     both fit, and with one token less only one does.
+def test_recall_3b_exact_budget_edge_counts_the_separators(make_agent):
+    store = make_agent().store
+    sids = []
+    for text in ("first notes on soil", "second notes on soil"):
+        sid, (turn,) = add_session(store, [("user", text)])
+        pad = -len(render_session(store, sid)) % 4                # a whole number of tokens...
+        store.db.execute("UPDATE turns SET text = text || ? WHERE id=?", ("." * pad, turn))
+        sids.append(sid)
+    blocks = [render_session(store, sid) for sid in sids]
+    costs = [estimate_tokens(block + "\n\n") for block in blocks]
+    assert costs == [estimate_tokens(block) + 1 for block in blocks]   # ...so each separator costs a token
+    assert recall(store, HashEmbedder(), "soil", budget=sum(costs))[1] == sids
+    assert len(recall(store, HashEmbedder(), "soil", budget=sum(costs) - 1)[1]) == 1
+
+
 class StubEmbedder:
     """Dense similarity chosen by the test: each listed text gets that cosine with the query."""
     name = "stub"
@@ -107,3 +124,24 @@ def test_recall_5_session_scored_by_its_best_two_turns(make_agent):
     ranked = rank_sessions(store, embedder, "nothing in common")      # no shared words: dense only
     assert [sid for sid, _ in ranked] == [two, five, one]
     assert ranked[0][1] == pytest.approx(2 / 62 + 2 / 63)
+
+
+class PointEmbedder:
+    """Vectors chosen by the test, the query's included; any other text points somewhere else."""
+    name = "points"
+
+    def __init__(self, vectors):
+        self.vectors = vectors
+
+    def embed(self, texts):
+        return [self.vectors.get(text, [0.0, 0.0, 1.0]) for text in texts]
+
+
+# 4c. The dense index scores each turn against the query itself. The query has its own vector and shares
+#     no word with either turn, so BM25 can't carry the ranking.
+def test_recall_4c_the_dense_index_scores_the_query(make_agent):
+    store = make_agent().store
+    far, _ = add_session(store, [("user", "bravo")])
+    near, _ = add_session(store, [("user", "alpha")])
+    embedder = PointEmbedder({"where is my cat": [1.0, 0.0, 0.0], "alpha": [0.9, 0.0, 0.1], "bravo": [0.1, 0.0, 0.9]})
+    assert [sid for sid, _ in rank_sessions(store, embedder, "where is my cat")] == [near, far]

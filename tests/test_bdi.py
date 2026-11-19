@@ -284,3 +284,51 @@ def test_bdi_6e_a_version_written_in_the_deleted_session_goes_whatever_it_cites(
         "Weighing is on Mondays", 0.8, [t1], "review")
     assert [b["id"] for b in bdi.current_beliefs(store)] == [back["id"]]
     assert b"OSPREY" not in file_bytes(tmp_path) and b"QUILLFEATHER" not in file_bytes(tmp_path)
+
+
+# 1c. Dropping a desire and marking an intention done each append a row; the old row is left as it was.
+def test_bdi_1c_drop_and_done_append_rather_than_edit(make_agent):
+    agent = make_agent(replies=[say("Done.", done=[1])])
+    store = agent.store
+    desire = bdi.add_desire(store, "Replicate figure 3")
+    agent.handle("Figure 3 is replicated.")                       # turn 1, cited as the evidence
+    rows = store.db.execute("SELECT * FROM intentions ORDER BY id").fetchall()
+    assert [(r["status"], r["supersedes"]) for r in rows] == [("active", None), ("done", rows[0]["id"])]
+    bdi.drop_desire(store, desire)
+    rows = store.db.execute("SELECT * FROM desires ORDER BY id").fetchall()
+    assert [(r["live"], r["supersedes"], r["key"]) for r in rows] == [(1, None, desire), (0, desire, desire)]
+
+
+# 2c. The model is handed the current beliefs, each with its id and confidence (section 4, step 2).
+def test_bdi_2c_the_model_is_shown_the_current_beliefs(make_agent):
+    agent = make_agent(replies=[say("Noted.", beliefs=[{"text": "The mice are weighed on Mondays",
+                                                        "confidence": 0.6, "evidence": [1]}]), say("Mondays.")])
+    agent.handle("We weigh the mice on Mondays.")
+    agent.handle("When do we weigh them?")
+    shown = agent.model.calls[-1][-1]["content"].split("YOUR CURRENT BELIEFS:\n")[1].split("\n\n")[0]
+    assert shown == "#1 (confidence 0.60): The mice are weighed on Mondays"
+
+
+# 2d. Evidence may come from a recalled session, not only from this one (section 4, step 3).
+def test_bdi_2d_a_change_may_cite_a_recalled_sessions_turn(make_agent):
+    agent = make_agent(replies=[say("Biscuit.", beliefs=[{"text": "The cat is called Biscuit", "confidence": 0.7,
+                                                          "evidence": [1]}])])
+    add_session(agent.store, [("user", "My cat is called Biscuit."), ("agent", "Noted.")])   # turns 1 and 2
+    agent.handle("What is my cat called?")
+    assert "[turn 1] user: My cat is called Biscuit." in agent.model.calls[-1][-1]["content"]   # recalled
+    assert [(b["text"], json.loads(b["evidence"])) for b in bdi.current_beliefs(agent.store)] == [
+        ("The cat is called Biscuit", [1])]
+
+
+# 4c. Nothing is recorded as "I decided": a change with a free-text reason and no evidence is rejected,
+#     and a reason sent alongside real evidence is stored nowhere.
+def test_bdi_4c_no_free_text_reason_is_accepted_or_recorded(make_agent):
+    agent = make_agent(replies=[say("ok", beliefs=[
+        {"text": "Without evidence", "confidence": 0.9, "reason": "I decided"},
+        {"text": "With evidence", "confidence": 0.9, "evidence": [1], "reason": "because I decided so"}])])
+    agent.handle("hello")
+    assert [b["text"] for b in bdi.current_beliefs(agent.store)] == ["With evidence"]
+    assert "no evidence" in logged(agent.store, "rejected belief")[0]
+    assert "reason" not in [row[1] for row in agent.store.db.execute("PRAGMA table_info(beliefs)")]
+    stored = [str(value) for row in agent.store.db.execute("SELECT * FROM beliefs") for value in row]
+    assert not [value for value in stored if "decided" in value]
