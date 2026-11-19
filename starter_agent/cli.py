@@ -16,6 +16,13 @@ def build(config, model=None, clock=utc_now):
     return Agent(store, model or make_model(config), make_embedder(config.embedder), config)
 
 
+def ask(prompt):
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+
+
 def show_belief(b):
     if b["flag"] == "removed":
         return f"#{b['id']}  [removed] {b['text']}"
@@ -34,7 +41,7 @@ def cmd_chat(agent, a):
     while True:
         try:
             text = input("you> ").strip()
-        except EOFError:
+        except (EOFError, KeyboardInterrupt):
             return 0
         if text == "/quit":
             return 0
@@ -58,8 +65,8 @@ def cmd_session(agent, a):
     elif a.action == "show":
         print(render_session(store, a.id))
     elif a.action == "delete":
-        if not a.yes and input(f"Delete session {a.id} and what it alone taught the agent? "
-                               "This can't be undone. Type yes: ").strip() != "yes":
+        if not a.yes and ask(f"Delete session {a.id} and what it alone taught the agent? "
+                             "This can't be undone. Type yes: ") != "yes":
             print("Nothing deleted.")
             return 1
         print(json.dumps(agent.delete_session(a.id), indent=1))
@@ -69,6 +76,9 @@ def cmd_session(agent, a):
 def cmd_desire(agent, a):
     store = agent.store
     if a.action == "add":
+        if not " ".join(a.args).strip():
+            print('Say what the agent should want, e.g.: desire add "Replicate figure 3" --rank 1')
+            return 1
         print(f"Desire #{bdi.add_desire(store, ' '.join(a.args), a.rank)} added.")
     elif a.action == "list":
         for d in bdi.live_desires(store):
@@ -76,13 +86,14 @@ def cmd_desire(agent, a):
     else:
         try:
             desire_id = int(a.args[0])
-            if store.latest("desires", desire_id) is None:
+            desire = store.latest("desires", desire_id)
+            if desire is None or desire["flag"] == "removed":
                 raise ValueError
+            new_rank = a.rank if a.rank is not None or a.action == "drop" else int(a.args[1])
         except (IndexError, ValueError):
-            print("Give the id of a desire (see: desire list).")
+            print("Give the id of a desire (see: desire list), and for rank the new rank: desire rank ID N")
             return 1
         if a.action == "rank":
-            new_rank = a.rank if a.rank is not None else int(a.args[1])
             print(f"Desire is now #{bdi.rerank_desire(store, desire_id, new_rank)}, rank {new_rank}.")
         else:
             print(f"Desire dropped (#{bdi.drop_desire(store, desire_id)}).")
