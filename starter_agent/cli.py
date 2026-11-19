@@ -114,8 +114,10 @@ def cmd_beliefs(agent, a):
 
 
 def cmd_intentions(agent, a):
+    current = bdi.pick_intention(agent.store)          # plain code, the same pick a chat turn makes
     for i in agent.store.current("intentions", "flag IS NOT 'removed'"):
-        print(f"#{i['id']}  {i['status']}  {i['text']}")
+        mark = "  (current)" if current and i["id"] == current["id"] else ""
+        print(f"#{i['id']}  {i['status']}  {i['text']}{mark}")
     return 0
 
 

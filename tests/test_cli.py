@@ -32,7 +32,7 @@ def test_every_command(cli, capsys, monkeypatch, tmp_path):
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     assert cli("chat") == 0
     assert "agent> You said: why\nSession ended; curiosity queued 0 question(s)." in out()
-    assert cli("intentions") == 0 and out() == "#1  active  Write the methods\n"
+    assert cli("intentions") == 0 and out() == "#1  active  Write the methods  (current)\n"
     # beliefs and their history
     assert cli("beliefs") == 0 and out() == "#1  0.60  the sample is 12 rats  (evidence: turns 1)\n"
     store = Store(str(tmp_path / "agent.db"), Clock())     # a second version, as a model would propose

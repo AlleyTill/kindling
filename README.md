@@ -91,7 +91,7 @@ Run every command from inside this folder.
 | `session delete ID` | delete a session and what it alone taught the agent (asks first; `--yes` skips) |
 | `desire add "TEXT" [--rank N]` | something you want the agent to work toward; rank 1 is the top |
 | `desire list` / `desire rank ID N` / `desire drop ID` | your live desires; change a rank; stop one |
-| `intentions` | what the agent is working on: each serves a desire |
+| `intentions` | what the agent is working on: each serves a desire, and one is current |
 | `beliefs` / `beliefs history ID` | current beliefs; every version of one, with its evidence |
 | `curious list` | open questions, each with the agent's own words it came from |
 | `curious drop ID` / `curious adopt ID [--rank N]` | turn a question down (it won't come back); make it a desire |
