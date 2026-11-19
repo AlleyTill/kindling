@@ -19,13 +19,34 @@ class Config:
     auto_adopt: bool = False          # section 6: questions become desires only on `curious adopt`
 
 
+KINDS = {bool: "true or false", int: "a whole number", float: "a number", str: "text in quotes"}
+
+
+def right_kind(kind, value):
+    if isinstance(value, bool):          # in Python, True is also an int, so check for it first
+        return kind is bool
+    return isinstance(value, (int, float)) if kind is float else isinstance(value, kind)
+
+
 def load_config(path="agent.json", **overrides):
+    """Your settings from agent.json over the defaults. A mistake in the file stops with a message."""
     values = {}
     if path and os.path.exists(path):
-        with open(path) as f:
-            values = json.load(f)
-    unknown = set(values) - {f.name for f in fields(Config)}
+        with open(path, encoding="utf-8") as f:
+            try:
+                values = json.load(f)
+            except ValueError as error:
+                raise SystemExit(f"{path} isn't valid JSON ({error}). It should look like this: "
+                                 '{"backend": "ollama", "model": "llama3.1:8b"}')
+    if not isinstance(values, dict):
+        raise SystemExit(f'{path} should hold one JSON object, like {{"backend": "ollama"}}.')
+    defaults = {f.name: f for f in fields(Config)}
+    unknown = set(values) - set(defaults)
     if unknown:
         raise SystemExit(f"{path}: unknown settings {sorted(unknown)}")
+    for name, value in values.items():
+        if not right_kind(defaults[name].type, value):
+            raise SystemExit(f'{path}: "{name}" should be {KINDS[defaults[name].type]} (the default is '
+                             f"{json.dumps(defaults[name].default)}), not {json.dumps(value)}.")
     values.update({name: value for name, value in overrides.items() if value is not None})
     return Config(**values)

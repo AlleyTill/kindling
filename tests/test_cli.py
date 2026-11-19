@@ -1,9 +1,14 @@
 """The command line does everything a student needs, and the README's walk-through runs as written."""
 import re
 import shlex
+import time
 from pathlib import Path
 
+import pytest
+
 from conftest import Clock
+from starter_agent.cli import main
+from starter_agent.models import FakeModel
 from starter_agent.store import Store
 
 
@@ -71,3 +76,48 @@ def test_every_command(cli, capsys, monkeypatch, tmp_path):
                  ["session", "show", "99"], ["session", "delete"]):
         assert cli(*argv) == 1, argv
         assert out().strip()
+
+
+def test_a_mistake_in_agent_json_gets_a_message_not_a_traceback(cli, tmp_path):
+    for text, message in (('{"backend": "ollama",}', "agent.json isn't valid JSON"),
+                          ('["ollama"]', "should hold one JSON object"),
+                          ('{"recall_budget_tokens": "8000"}', '"recall_budget_tokens" should be a whole number'),
+                          ('{"recall_budget_tokens": 8000.5}', '"recall_budget_tokens" should be a whole number'),
+                          ('{"auto_adopt": "no"}', '"auto_adopt" should be true or false'),
+                          ('{"dedupe_similarity": true}', '"dedupe_similarity" should be a number'),
+                          ('{"backend": 3}', '"backend" should be text in quotes'),
+                          ('{"bakend": "ollama"}', "unknown settings ['bakend']")):
+        (tmp_path / "agent.json").write_text(text)
+        with pytest.raises(SystemExit) as stop:
+            cli("beliefs")
+        assert message in str(stop.value.code), text
+    (tmp_path / "agent.json").write_text('{"dedupe_similarity": 1, "recall_budget_tokens": 400, "auto_adopt": false}')
+    assert cli("beliefs") == 0                                       # a whole number is a number too
+
+
+def test_an_unreachable_model_points_to_a_readme_section_that_exists(tmp_path, capsys):
+    def unreachable(messages):
+        raise OSError("connection refused")
+    argv = ["--config", str(tmp_path / "agent.json"), "--db", str(tmp_path / "agent.db"), "chat", "hello"]
+    assert main(argv, model=FakeModel(fn=unreachable), clock=Clock()) == 1
+    (section,) = re.findall(r"See '([^']+)' in the README", capsys.readouterr().out)
+    assert section in (Path(__file__).parent.parent / "README.md").read_text()
+
+
+@pytest.fixture
+def pacific(monkeypatch):
+    """Your computer's clock set to California in winter (UTC-8), for the length of one test."""
+    monkeypatch.setenv("TZ", "PST8")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_times_are_shown_in_local_time(cli, capsys, pacific):
+    assert cli("chat", "hello") == 0 and cli("session", "end") == 0           # the test clock: 09:00 UTC
+    capsys.readouterr()
+    assert cli("session", "list") == 0
+    assert capsys.readouterr().out == "#1  2026-11-19 01:00 to 2026-11-19 01:00  hello\n"
+    assert cli("session", "show", "1") == 0
+    assert capsys.readouterr().out.startswith("=== Session 1, 2026-11-19 01:00 to 2026-11-19 01:00 ===")

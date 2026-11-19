@@ -13,6 +13,7 @@ import math
 from collections import Counter, defaultdict
 
 from .embed import cosine, from_blob, to_blob, words
+from .store import local
 
 
 def estimate_tokens(text):
@@ -45,7 +46,8 @@ def ranks(scores, positive_only=False):
 
 def render_session(store, session_id):
     session = store.session(session_id)
-    lines = [f"=== Session {session_id}, {session['started_at']} to {session['ended_at'] or 'now'} ==="]
+    ended = local(session["ended_at"]) if session["ended_at"] else "now"
+    lines = [f"=== Session {session_id}, {local(session['started_at'])} to {ended} ==="]
     lines += [f"[turn {t['id']}] {t['role']}: {t['text']}" for t in store.turns(session_id)]
     return "\n".join(lines)
 

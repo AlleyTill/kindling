@@ -8,7 +8,7 @@ from .config import load_config
 from .embed import make_embedder
 from .models import make_model
 from .recall import recall, render_session
-from .store import Store
+from .store import Store, local
 
 
 def build(config, model=None, clock=utc_now):
@@ -58,7 +58,8 @@ def cmd_session(agent, a):
         print(f"Session ended; curiosity queued {len(queued)} question(s). See: curious list")
     elif a.action == "list":
         for s in store.sessions():
-            print(f"#{s['id']}  {s['started_at']} to {s['ended_at'] or '(open)'}  {s['title'] or ''}")
+            ended = local(s["ended_at"]) if s["ended_at"] else "(open)"
+            print(f"#{s['id']}  {local(s['started_at'])} to {ended}  {s['title'] or ''}")
     elif a.id is None or store.session(a.id) is None:
         print("Give the id of an existing session (see: session list).")
         return 1
@@ -157,7 +158,7 @@ def cmd_recall(agent, a):
 
 def cmd_log(agent, a):
     for row in agent.store.db.execute("SELECT * FROM log ORDER BY id"):
-        print(f"#{row['id']}  {row['at']}  session {row['session_id']}  {row['kind']}: {row['reason']}")
+        print(f"#{row['id']}  {local(row['at'])}  session {row['session_id']}  {row['kind']}: {row['reason']}")
     return 0
 
 
@@ -193,5 +194,5 @@ def main(argv=None, model=None, clock=utc_now):
     try:
         return globals()[f"cmd_{a.command}"](agent, a)
     except OSError as error:
-        print(f"Could not reach the model: {error}. See the README, 'Choosing a model'.")
+        print(f"Could not reach the model: {error}. See 'Choose a real model' in the README.")
         return 1

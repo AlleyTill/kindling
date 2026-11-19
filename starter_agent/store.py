@@ -11,6 +11,7 @@ The exceptions, said out loud:
 """
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (        -- AUTOINCREMENT: a deleted id is never handed out again,
@@ -40,6 +41,11 @@ CREATE TABLE IF NOT EXISTS log (              -- what was dropped, and why
 
 VERSIONED = ("beliefs", "desires", "intentions", "questions")
 META = ("id", "key", "supersedes", "at")
+
+
+def local(timestamp):
+    """A stored time (UTC) as your computer's local time, for showing: '2026-11-19 01:00'."""
+    return datetime.fromisoformat(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 class Store:
