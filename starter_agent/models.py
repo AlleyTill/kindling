@@ -101,10 +101,17 @@ class Anthropic:
         rest = [m for m in messages if m["role"] != "system"]
         out = post_json(f"{self.base_url}/v1/messages",
                         # max_tokens is required. A reply here is ~300 tokens (plan section 7), but
-                        # current Claude models think first and thinking counts against it; 16,000 is
-                        # the documented default for a non-streaming request.
-                        {"model": self.model, "max_tokens": 16000, "system": system, "messages": rest},
-                        {"x-api-key": self.key, "anthropic-version": "2026-10-21"})
+                        # current Claude models think first and thinking counts against it; ~16,000 is
+                        # the usual ceiling for a request that isn't streamed.
+                        # "fallbacks": if a safety check declines a harmless message, Anthropic retries it
+                        # on the model it recommends instead of failing. Delete it and the beta header
+                        # if your model or provider doesn't accept them.
+                        {"model": self.model, "max_tokens": 16000, "system": system, "messages": rest,
+                         "fallbacks": "default"},
+                        {"x-api-key": self.key, "anthropic-version": "2026-10-21",
+                         "anthropic-beta": "server-side-fallback-2026-07-01"})
+        if out.get("stop_reason") == "refusal":     # declined: there is no reply to read
+            return "(The model declined to answer this message.)"
         return "".join(block.get("text", "") for block in out["content"] if block.get("type") == "text")
 
 
