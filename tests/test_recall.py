@@ -3,9 +3,13 @@ import math
 
 import pytest
 
-from conftest import add_session
+from conftest import Clock, add_session
+from starter_agent.agent import Agent
+from starter_agent.config import Config
 from starter_agent.embed import HashEmbedder
+from starter_agent.models import FakeModel
 from starter_agent.recall import Memory, Recalled, estimate_tokens, fuse, rank_sessions, recall, render_session
+from starter_agent.store import Store
 
 TOPICS = ["sourdough starters", "bicycle gearing", "tidal pools", "jazz chord voicings", "glacier retreat",
           "medieval bookbinding", "solar panel inverters", "beekeeping in winter", "orbital mechanics",
@@ -163,13 +167,16 @@ def test_recall_6_memory_recall_is_the_narrow_interface(make_agent):
     assert got.scored_by == "RRF of BM25 and the hash-256 embedder"
 
 
-def test_recall_6b_another_retriever_can_be_swapped_in(make_agent):
+def test_recall_6b_another_retriever_can_be_swapped_in(tmp_path):
     class OwnRetriever:
+        asked = None
+
         def recall(self, query, budget_tokens):
             self.asked = (query, budget_tokens)
             return Recalled("=== Session 7 ===\n[turn 70] user: from my own retriever", [(7, 1.0)], "by hand")
-    agent = make_agent(fn=lambda messages: "ok")
-    agent.memory = OwnRetriever()
+    own = OwnRetriever()
+    config = Config(db=str(tmp_path / "agent.db"))
+    agent = Agent(Store(config.db, Clock()), FakeModel(fn=lambda messages: "ok"), HashEmbedder(), config, memory=own)
     agent.handle("hello")
-    assert agent.memory.asked == ("hello", 8000)
+    assert own.asked == ("hello", 8000)                         # the agent asked the retriever it was given
     assert "[turn 70] user: from my own retriever" in agent.model.calls[-1][-1]["content"]

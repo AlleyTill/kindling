@@ -146,7 +146,7 @@ def test_each_agent_has_its_own_private_memory_folder(tmp_path, monkeypatch):
         (folder / "agent.json").write_text("{}")
         assert main(["--config", str(folder / "agent.json"), "chat", "hello"], clock=Clock()) == 0
         memory = folder / "memory"
-        assert [p.name for p in memory.iterdir()] == ["agent.db"]
+        assert memory.is_dir() and [p.name for p in memory.iterdir()] == ["agent.db"]
         assert stat.S_IMODE(memory.stat().st_mode) == 0o700
         assert stat.S_IMODE((memory / "agent.db").stat().st_mode) == 0o600
     assert not (tmp_path / "memory").exists()           # no shared default location
