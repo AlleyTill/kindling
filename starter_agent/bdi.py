@@ -182,7 +182,8 @@ def forget_turns(store, session_id, gone, date):
         evidence = json.loads(row["evidence"])
         if row["session_id"] == session_id or (evidence and not any(t in alive for t in evidence)):
             store.db.execute("UPDATE beliefs SET text=?, confidence=NULL, evidence='[]', session_id=NULL, "
-                             "flag='removed' WHERE id=?", (REMOVED.format(what="a belief", date=date), row["id"]))
+                             "flag='removed' WHERE id=?",
+                             (REMOVED.format(what="a belief", date=date), row["id"]))
             counts["belief_versions_removed"] += 1
     for row in before:
         if row["session_id"] != session_id and all(t in alive for t in json.loads(row["evidence"])):

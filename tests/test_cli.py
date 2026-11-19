@@ -93,9 +93,11 @@ def test_a_mistake_in_agent_json_gets_a_message_not_a_traceback(cli, tmp_path):
                           ('{"backend": 3}', '"backend" should be text in quotes'),
                           ('{"bakend": "ollama"}', "unknown settings ['bakend']")):
         (tmp_path / "agent.json").write_text(text)
-        with pytest.raises(SystemExit) as stop:
-            cli("beliefs")
-        assert message in str(stop.value.code), text
+        try:
+            stopped = cli("beliefs")
+        except BaseException as error:                    # a traceback must fail by assertion, not crash
+            stopped = error
+        assert isinstance(stopped, SystemExit) and message in str(stopped.code), (text, stopped)
     (tmp_path / "agent.json").write_text('{"dedupe_similarity": 1, "recall_budget_tokens": 400, "auto_adopt": false}')
     assert cli("beliefs") == 0                                       # a whole number is a number too
 

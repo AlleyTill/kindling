@@ -23,8 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 MUTANTS = [
     # --- The shape (plan sections 2 and 3) ---------------------------------------------------------
     ("Act makes ONE model call per turn", "starter_agent/agent.py", [(
-        "        raw = self.model.complete(",
-        "        self.model.complete([{'role': 'user', 'content': message}])\n        raw = self.model.complete(")]),
+        "            raw = self.model.complete(",
+        "            self.model.complete([{'role': 'user', 'content': message}])\n            raw = self.model.complete(")]),
     ("the tests never reach a real model", "starter_agent/models.py", [(
         'return FakeModel()\n    if config.backend == "ollama"',
         'return Ollama("", "http://127.0.0.1:9")\n    if config.backend == "ollama"')]),
@@ -100,16 +100,24 @@ MUTANTS = [
     ("done needs real evidence", "starter_agent/bdi.py", [(
         "problem = check_evidence(done, allowed) or (None", "problem = (None")]),
     # --- Deleting a session (section 4) ------------------------------------------------------------
-    ("a belief resting only on the session is removed", "starter_agent/bdi.py", [(
-        "if evidence and all(t in gone for t in evidence):", "if False:")]),
+    ("a belief whose evidence is all gone is removed", "starter_agent/bdi.py", [(
+        'if row["session_id"] == session_id or (evidence and not any(t in alive for t in evidence)):',
+        'if row["session_id"] == session_id:')]),
+    ("a version WRITTEN in the session is removed, whatever it cites", "starter_agent/bdi.py", [(
+        'if row["session_id"] == session_id or (evidence and', "if (evidence and")]),
+    ("a turn an earlier delete took counts as gone", "starter_agent/bdi.py", [(
+        "(evidence and not any(t in alive for t in evidence))", "(evidence and all(t in gone for t in evidence))")]),
+    ("a belief version records the session it was written in", "starter_agent/bdi.py", [(
+        '"session_id": session_id, "flag": None}, old))', '"session_id": None, "flag": None}, old))')]),
+    ("a review copy keeps the session its words were written in", "starter_agent/bdi.py", [(
+        '"session_id": back["session_id"],', '"session_id": None,')]),
     ("the marker keeps no text", "starter_agent/bdi.py", [(
         '(REMOVED.format(what="a belief", date=date), row["id"])',
         '(REMOVED.format(what="a belief", date=date) + ": " + row["text"], row["id"])')]),
     ("a belief with other evidence keeps only that evidence", "starter_agent/bdi.py", [(
-        'kept = [t for t in json.loads(survivors[-1]["evidence"]) if t not in gone]',
-        'kept = json.loads(survivors[-1]["evidence"])')]),
+        'kept = [t for t in json.loads(back["evidence"]) if t in alive]', 'kept = json.loads(back["evidence"])')]),
     ("a belief that lost evidence is flagged for review", "starter_agent/bdi.py", [(
-        '"evidence": json.dumps(kept), "flag": "review"}', '"evidence": json.dumps(kept), "flag": None}')]),
+        '"flag": "review"},', '"flag": None},')]),
     ("a change made only in the session is undone", "starter_agent/bdi.py", [(
         'survivors = [v for v in store.history("beliefs", row["id"]) if v["flag"] != "removed"]',
         'survivors = [v for v in [store.latest("beliefs", row["id"])] if v["flag"] != "removed"]')]),
@@ -132,8 +140,12 @@ MUTANTS = [
     ("curiosity never runs mid-conversation", "starter_agent/agent.py", [(
         "        return reply\n",
         "        curiosity.run(self.store, self.model, self.embedder, self.config, sid)\n        return reply\n")]),
-    ("an idle session is ended and read before `curious list`", "starter_agent/cli.py", [(
-        "        agent.end_if_idle()                  # so yesterday's session has been read\n", "")]),
+    ("`curious list` never ends a session or calls the model", "starter_agent/cli.py", [(
+        "        idle = agent.idle_session()\n", "        agent.end_if_idle()\n        idle = agent.idle_session()\n")]),
+    ("`curious list` says when an idle session is still open", "starter_agent/cli.py", [(
+        "        idle = agent.idle_session()\n", "        idle = None\n")]),
+    ("an idle session ends at the next chat", "starter_agent/agent.py", [(
+        "        self.end_if_idle()\n", "")]),
     ("a session is read once", "starter_agent/agent.py", [(
         "        session = self.store.open_session()\n        if not session:\n            return []",
         "        session = self.store.open_session() or self.store.sessions()[-1]\n        if not session:\n"
@@ -172,13 +184,52 @@ MUTANTS = [
     ("`desire rank ID N` sets rank N", "starter_agent/cli.py", [(
         "bdi.rerank_desire(store, desire_id, new_rank)", "bdi.rerank_desire(store, desire_id, 1)")]),
     ("`intentions` marks the current pick", "starter_agent/cli.py", [(
-        "current = bdi.pick_intention(agent.store)", "current = None")]),
+        "desire, current = bdi.choose(agent.store)", "desire, current = bdi.choose(agent.store)[0], None")]),
+    ("`intentions` writes nothing", "starter_agent/cli.py", [(
+        "desire, current = bdi.choose(agent.store)", "desire, current = None, bdi.pick_intention(agent.store)")]),
+    ("`intentions` leaves out an intention whose desire was dropped", "starter_agent/cli.py", [(
+        '        if i["serves"] in live:', "        if True:")]),
     ("`session delete` asks first", "starter_agent/cli.py", [("if not a.yes and ask(", "if False and ask(")]),
     ("`beliefs history` shows every version", "starter_agent/cli.py", [(
         'rows = agent.store.history("beliefs", a.id) if a.id is not None else []',
         'rows = [agent.store.latest("beliefs", a.id)] if a.id is not None else []')]),
     ("`curious drop` drops", "starter_agent/cli.py", [(
         'act = curiosity.drop if a.action == "drop"', 'act = curiosity.adopt if a.action == "drop"')]),
+    ("a mistake in agent.json stops with a message", "starter_agent/config.py", [(
+        "            except ValueError as error:", "            except KeyError as error:")]),
+    ("a setting of the wrong kind stops with a message", "starter_agent/config.py", [(
+        "        if not right_kind(defaults[name].type, value):", "        if False:")]),
+    ("times are shown in local time", "starter_agent/store.py", [(
+        ".astimezone().strftime(", ".strftime(")]),
+    # --- This round: no orphan turn, one transaction per row ---------------------------------------------
+    ("a message the model never answered is taken back", "starter_agent/agent.py", [(
+        "            self.store.take_back(turn)", "            pass")]),
+    ("its embedding goes with it", "starter_agent/store.py", [(
+        '            self.db.execute("DELETE FROM vectors WHERE turn_id=?", (turn_id,))\n', "")]),
+    ("a row and its key are written in one transaction", "starter_agent/store.py", [(
+        "        with self.transaction():\n            new_id", "        if True:\n            new_id")]),
+    # --- Nexus's four ideas (section 5) ----------------------------------------------------------------
+    ("every printed score names its embedder", "starter_agent/cli.py", [(
+        "score {score:.4f}  ({pack.scored_by})", "score {score:.4f}")]),
+    ("the hash embedder is named at startup", "starter_agent/cli.py", [(
+        "        print(HASH_NOTE, file=sys.stderr)", "        pass")]),
+    ("a skipped near-duplicate names its similarity and embedder", "starter_agent/curiosity.py", [(
+        ' ({twin[1]:.2f} similar by {embedder.name})"', '"')]),
+    ("Memory.recall leaves the open session out", "starter_agent/recall.py", [(
+        'exclude=current["id"] if current else None)', "exclude=None)")]),
+    ("Memory.recall returns each session's own score", "starter_agent/recall.py", [(
+        "[(sid, scores[sid]) for sid, _ in chosen]", "[(sid, 1.0) for sid, _ in chosen]")]),
+    ("the agent recalls through whatever memory it was given", "starter_agent/agent.py", [(
+        "self.memory = memory or Memory(store, embedder)", "self.memory = Memory(store, embedder)")]),
+    ("each part runs alone on its own fixture", "starter_agent/fixtures.py", [(
+        "def recall_alone(budget_tokens=60):", "def recall_alone(budget_tokens=10**6):")]),
+    ("a memory folder created here is private (700)", "starter_agent/store.py", [(
+        '        os.makedirs(folder, mode=0o700)\n        if os.name == "posix":\n            os.chmod(folder, 0o700)\n',
+        "        os.makedirs(folder)\n")]),
+    ("the memory file is private (600)", "starter_agent/store.py", [(
+        "        os.chmod(path, 0o600)", "        pass")]),
+    ("each agent's memory is beside its own agent.json", "starter_agent/config.py", [(
+        'values["db"] = os.path.join(os.path.dirname(path or ""), db)', 'values["db"] = db')]),
 ]
 
 PLUGIN = '''
