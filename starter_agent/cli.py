@@ -176,7 +176,8 @@ def main(argv=None, model=None, clock=utc_now):
     p = argparse.ArgumentParser(prog="python -m starter_agent",
                                 description="A small agent that remembers, keeps beliefs, and wonders.")
     p.add_argument("--config", default="agent.json", help="settings file (default: agent.json)")
-    p.add_argument("--db", help="the database file (default: agent.db)")
+    p.add_argument("--db", help="the database file (default: memory/agent.db beside agent.json; "
+                                "a relative --db is read from the current folder)")
     sub = p.add_subparsers(dest="command", required=True)
     s = sub.add_parser("chat", help="send one message, or none to talk until /quit")
     s.add_argument("message", nargs="*")

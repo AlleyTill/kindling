@@ -3,3 +3,13 @@
 __pycache__/
 .pytest_cache/
 memory/
+# a student's virtual environment and secrets never belong in the repo
+.venv/
+venv/
+.env
+.env.*
+*.pem
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
