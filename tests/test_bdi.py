@@ -324,7 +324,7 @@ def test_bdi_2d_a_change_may_cite_a_recalled_sessions_turn(make_agent):
 #     and a reason sent alongside real evidence is stored nowhere.
 def test_bdi_4c_no_free_text_reason_is_accepted_or_recorded(make_agent):
     agent = make_agent(replies=[say("ok", beliefs=[
-        {"text": "Without evidence", "confidence": 0.9, "reason": "I decided"},
+        {"text": "Without evidence", "confidence": 0.9, "evidence": [], "reason": "I decided"},
         {"text": "With evidence", "confidence": 0.9, "evidence": [1], "reason": "because I decided so"}])])
     agent.handle("hello")
     assert [b["text"] for b in bdi.current_beliefs(agent.store)] == ["With evidence"]
