@@ -152,7 +152,8 @@ def cmd_curious(agent, a):
     if result is None:
         print("Give the id of an open question (see: curious list).")
         return 1
-    print("Dropped; it stays in the file and won't come back." if a.action == "drop"
+    print("Dropped. It stays in the file, and a new question in nearly the same words won't be queued."
+          if a.action == "drop"
           else f"Adopted as desire #{result}.")
     return 0
 

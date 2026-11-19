@@ -3,8 +3,8 @@
 - Once per session, when it ends: one model call reads the agent's OWN turns from that session.
 - Every question must quote 2 to 20 whole words found word for word in the agent turn it cites, or
   it is dropped.
-- A question too close (similarity 0.85) to an open OR dropped one is skipped, so a question you
-  turned down doesn't come back next week in new words.
+- A question too close (similarity 0.85) to an open OR dropped one is skipped. With the default hash
+  embedder that catches nearly the same words, not new words for the same question (see the README).
 - At most 20 open questions: the oldest open one is marked `expired`, never deleted.
 - No outside search, and no model call anywhere else. It never talks to you on its own.
 - `curious list`, `curious drop ID`, `curious adopt ID`. Only adopt turns a question into a desire,

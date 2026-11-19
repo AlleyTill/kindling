@@ -1,6 +1,8 @@
 """The command line does everything a student needs, and the README's walk-through runs as written."""
 import re
 import shlex
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -52,7 +54,7 @@ def test_every_command(cli, capsys, monkeypatch, tmp_path):
     assert cli("curious", "list") == 0
     assert re.fullmatch(r'#1  why are rats nocturnal\?\n      "I\'m not sure about that yet" \(turn 6, session 2\)\n',
                         out())
-    assert cli("curious", "drop", "1") == 0 and "won't come back" in out()
+    assert cli("curious", "drop", "1") == 0 and "nearly the same words" in out()
     assert cli("curious", "list") == 0 and out() == ""
     assert cli("curious", "adopt", "1") == 1 and "open question" in out()      # dropped is not open
     assert cli("chat", "how do rats sleep?") == 0 and cli("session", "end") == 0
@@ -132,3 +134,11 @@ def test_the_hash_embedder_is_named_once_at_startup(cli, capsys, tmp_path):
     assert err.count("the hash embedder is in use") == 1 and "don't measure the memory design" in err
     (section,) = re.findall(r"See '([^']+)' in the README", err)
     assert section in (Path(__file__).parent.parent / "README.md").read_text()
+
+
+def test_the_readme_python_one_liner_lists_the_tables(tmp_path):
+    readme = (Path(__file__).parent.parent / "README.md").read_text()
+    (line,) = [line for line in readme.splitlines() if line.startswith('python -c "import sqlite3')]
+    Store(str(tmp_path / "memory" / "agent.db"), Clock())
+    out = subprocess.run([sys.executable, *shlex.split(line)[1:]], cwd=tmp_path, capture_output=True, text=True)
+    assert out.returncode == 0 and "('beliefs',)" in out.stdout, out.stderr

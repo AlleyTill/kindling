@@ -4,6 +4,7 @@ import re
 
 from conftest import agent_turns, say, scripted
 from starter_agent import curiosity
+from starter_agent.embed import HashEmbedder, cosine
 
 PUZZLE = "I'm not sure why the loss spikes at step 400"
 
@@ -128,6 +129,18 @@ def test_curiosity_4_dropped_question_reworded_does_not_return(make_agent):
     assert agent.store.latest("questions", spike["id"])["status"] == "dropped"
     skipped = [r[0] for r in agent.store.db.execute("SELECT reason FROM log WHERE kind='rejected question'")]
     assert len(skipped) == 2 and all(re.search(r"\(0\.\d\d similar by hash-256\)$", r) for r in skipped)
+
+
+# 4b. What the default hash embedder catches, measured; the README quotes these numbers. Nearly the same
+#     words pass the 0.85 bar, but ordinary rewordings score 0.69 to 0.76, so they come back.
+def test_curiosity_4b_hash_embedder_catches_near_copies_not_rewordings():
+    measured = {
+        ("Why does the training loss spike at step 400?", "Why does the training loss spike around step 400?"): .916,
+        ("Why do the mice lose weight?", "Why are the mice losing weight?"): .757,
+        ("Why do the mice lose weight?", "What makes the mice lose weight?"): .733,
+        ("Why does the training loss spike at step 400?", "What causes the loss spike near step 400?"): .686}
+    for (a, b), similarity in measured.items():
+        assert round(cosine(*HashEmbedder().embed([a, b])), 3) == similarity, (a, b)
 
 
 # 5. The queue at 20: the oldest open question becomes `expired`, and nothing is deleted.
