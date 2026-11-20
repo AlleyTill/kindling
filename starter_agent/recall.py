@@ -4,8 +4,9 @@
    and fuse the two rankings with reciprocal rank fusion: k = 60, dense weighted 2, BM25 1.
 2. Score each session by its best two turns.
 3. Pack whole sessions, best first, into a token budget (at most 8,000, less when the model's context
-   has less room: see Agent.recall); never cut one in half. A session too big for the budget is skipped,
-   and named, so you know. Inside the pack, put them oldest to newest so time reads forward.
+   has less room: see Agent.recall); never cut one in half. A session that doesn't fit is skipped, and
+   named when its size, not its rank, kept it out: a session ranked below it got in, or nothing fit at
+   all (Nexus's rule). Inside the pack, put them oldest to newest so time reads forward.
 4. Return the pack and the session ids, so Record can check what was cited.
 
 Only the user's turns are indexed. No model is called here except the embedder.
@@ -114,18 +115,21 @@ def rank_sessions(store, embedder, query, exclude=None):
 
 def pack_sessions(store, ranked, budget):
     """Whole sessions from `ranked` (best first) that fit the budget, oldest first: [(session id, its text)];
-    and the sessions too big for the budget on their own, which no pack can hold: [(id, score, tokens)]."""
-    chosen, too_big, used = [], [], 0
+    and the sessions to name, [(id, score, tokens)]: each left out for its size while a session ranked below
+    it got in, or every one left out when nothing fit at all (each was bigger than the whole budget)."""
+    chosen, skipped, named, used = [], [], [], 0
     for sid, score in ranked:
         block = render_session(store, sid)
         cost = estimate_tokens(block + "\n\n")
         if used + cost <= budget:        # a session that doesn't fit is skipped, never cut
             chosen.append((sid, block))
             used += cost
-        elif cost > budget:
-            too_big.append((sid, score, cost))
+            named += skipped             # they outranked this one: their size kept them out, not their rank
+            skipped = []
+        else:
+            skipped.append((sid, score, cost))
     chosen.sort()                        # session ids grow with time, so this is oldest to newest
-    return chosen, too_big
+    return chosen, named if chosen else skipped
 
 
 def recall(store, embedder, query, budget=8000, exclude=None):
@@ -139,7 +143,7 @@ class Recalled:
     text: str              # the sessions, whole and oldest first: what the model is shown
     sessions: list         # [(session id, score)], oldest first
     scored_by: str         # what made the scores; print it beside them
-    skipped: list = field(default_factory=list)   # [(id, score, tokens)]: would have been packed, too big
+    skipped: list = field(default_factory=list)   # [(id, score, tokens)]: left out for size, not rank
 
 
 class Memory:
@@ -155,8 +159,6 @@ class Memory:
         current = self.store.open_session()
         ranked = rank_sessions(self.store, self.embedder, query, exclude=current["id"] if current else None)
         scores = dict(ranked)
-        chosen, too_big = pack_sessions(self.store, ranked, budget_tokens)
-        lowest = min((scores[sid] for sid, _ in chosen), default=-1)
+        chosen, named = pack_sessions(self.store, ranked, budget_tokens)
         return Recalled("\n\n".join(block for _, block in chosen), [(sid, scores[sid]) for sid, _ in chosen],
-                        f"RRF of BM25 and the {self.embedder.name} embedder",
-                        [s for s in too_big if s[1] > lowest])       # it outscored a session that was packed
+                        f"RRF of BM25 and the {self.embedder.name} embedder", named)

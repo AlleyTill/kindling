@@ -200,7 +200,7 @@ def cmd_recall(agent, a):
     for session, score in pack.sessions:
         print(f"session {session}  score {score:.4f}  ({pack.scored_by})")
     for session, score, tokens in pack.skipped:
-        print(f"session {session}  score {score:.4f}  skipped: ~{tokens:,} tokens, over the "
+        print(f"session {session}  score {score:.4f}  skipped: ~{tokens:,} tokens, more than was left of the "
               f"{agent.config.recall_budget_tokens:,}-token budget (a session is never cut)")
     print(f"\n{pack.text}" if pack.sessions else "Nothing recalled.")
     idle = agent.idle_session()

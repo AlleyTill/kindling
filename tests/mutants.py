@@ -322,7 +322,7 @@ MUTANTS = [
     ("Ollama's count near its window warns that little room was left", "starter_agent/models.py", [(
         "used >= self.num_ctx * 0.95", "used > self.num_ctx * 2")]),
     ("a session too big for the budget is named", "starter_agent/recall.py", [(
-        "[s for s in too_big if s[1] > lowest]", "[]")]),
+        "return chosen, named if chosen else skipped", "return chosen, []")]),
     ("chat says which session recall skipped", "starter_agent/agent.py", [(
         'for sid, score, tokens in getattr(pack, "skipped", []):', "for sid, score, tokens in []:")]),
     ("the recall command says which session it skipped", "starter_agent/cli.py", [(
@@ -470,6 +470,12 @@ MUTANTS = [
         '        compare_count("The server", messages, whole_number_at(out, "usage", "prompt_tokens"))\n', "")]),
     ("Anthropic's count is compared after each call", "starter_agent/models.py", [(
         '        compare_count("Anthropic", messages, whole_number_at(out, "usage", "input_tokens"))\n', "")]),
+    ("V23 B: a session that fit the budget but not what was left is named", "starter_agent/recall.py", [(
+        "            named += skipped ", "            named += [s for s in skipped if s[2] > budget] ")]),
+    ("V23 b: a session ranked below every packed one isn't named", "starter_agent/recall.py", [(
+        "return chosen, named if chosen else skipped", "return chosen, named + skipped")]),
+    ("V23 c: when nothing fit, the session is named", "starter_agent/recall.py", [(
+        "return chosen, named if chosen else skipped", "return chosen, named")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

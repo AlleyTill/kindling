@@ -252,9 +252,10 @@ show a cut: Nexus found that a prompt Ollama cut counts *less* (about half the w
 each reply, the server's own count of the prompt (Ollama, OpenAI-compatible and Anthropic replies carry one)
 is compared with the estimate, and a miss of over a quarter is printed, so you can see how the estimate
 does on your text; it is never taken as a sign of a cut. A session is never cut in half, so a session
-bigger than the budget is never recalled, and a 30-turn day with real replies can be that big. `chat` and
-`recall` name such a session when it would have been recalled. End long days with `/end`, or raise both settings if your
-model has room.
+bigger than the budget is never recalled, and a 30-turn day with real replies can be that big. **`chat` and
+`recall` name a session when its size, not its rank, kept it out: it didn't fit what was left of the budget
+while a session ranked below it did, or nothing fit at all.** End long days with `/end`, or raise both
+settings if your model has room.
 
 ## Reading the code
 

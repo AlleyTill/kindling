@@ -218,7 +218,7 @@ def test_recall_8b_chat_and_the_recall_command_both_say_so(make_agent, cli, caps
     agent = make_agent(fn=lambda messages: "ok", recall_budget_tokens=400, db=str(tmp_path / "chat.db"))
     add_session(agent.store, [("user", "my cat is called Biscuit. " * 100)])
     agent.handle("what is my cat called?")
-    assert any(note.startswith("recall skipped session 1") and "over this turn's 400-token budget" in note
+    assert any(note.startswith("recall skipped session 1") and "was left of this turn's 400-token budget" in note
                for note in agent.notes)
     (tmp_path / "agent.json").write_text('{"recall_budget_tokens": 400}')
     cli("chat", "my cat is called Biscuit. " * 100)
@@ -226,6 +226,33 @@ def test_recall_8b_chat_and_the_recall_command_both_say_so(make_agent, cli, caps
     capsys.readouterr()
     assert cli("recall", "cat", "Biscuit") == 0
     assert "session 1  score" in (out := capsys.readouterr().out) and "skipped: ~" in out and "Nothing recalled" in out
+
+
+# --- Round 4: a session is named when its size, not its rank, kept it out (Nexus, 20 Nov: V23) --------------
+# Each session: (name, its cosine with the query, about how many tokens its text is), best first.
+
+V23 = {
+    "a: too big, above a packed one: named": ([("big", .9, 700), ("small", .8, 100)], 400, ["small"], ["big"]),
+    "b: too big, below every packed one: not named": ([("small", .9, 100), ("big", .8, 700)], 400, ["small"], []),
+    "c: the only session, too big: named": ([("big", .9, 700)], 400, [], ["big"]),
+    "B: fits the budget, not what was left, above one that got in: named": (
+        [("A", .9, 500), ("B", .8, 400), ("C", .7, 100)], 720, ["A", "C"], ["B"]),
+}
+
+
+@pytest.mark.parametrize("case", V23)
+def test_recall_11_a_session_is_named_when_its_size_not_its_rank_kept_it_out(make_agent, case):
+    sessions, budget, packed, named = V23[case]
+    store, texts = make_agent().store, {name: f"{name} " + "z" * (4 * tokens) for name, _, tokens in sessions}
+    ids = {name: add_session(store, [("user", text)])[0] for name, text in texts.items()}
+    cost = {name: estimate_tokens(render_session(store, sid) + "\n\n") for name, sid in ids.items()}
+    if case.startswith("B"):        # B alone fits the budget, so the old rule (bigger than it all) never named it
+        assert cost["B"] <= budget < cost["A"] + cost["B"] and cost["A"] + cost["C"] <= budget, cost
+    embedder = StubEmbedder({texts[name]: cosine for name, cosine, _ in sessions})    # no shared words: dense only
+    got = Memory(store, embedder).recall("q", budget)
+    name_of = {sid: name for name, sid in ids.items()}
+    assert sorted(name_of[sid] for sid, _ in got.sessions) == packed
+    assert [(name_of[sid], tokens) for sid, _, tokens in got.skipped] == [(name, cost[name]) for name in named]
 
 
 # --- Round 3: recall's budget is sized from the model's context (Nexus, 19 Nov, 02:33) ---------------------

@@ -62,8 +62,8 @@ class Agent:
         budget = min(self.config.recall_budget_tokens, room)
         pack = self.memory.recall(query, budget)
         for sid, score, tokens in getattr(pack, "skipped", []):
-            self.notes.append(f"recall skipped session {sid} (score {score:.4f}): ~{tokens:,} tokens, over "
-                              f"this turn's {budget:,}-token budget, and a session is never cut")
+            self.notes.append(f"recall skipped session {sid} (score {score:.4f}): ~{tokens:,} tokens, more than "
+                              f"was left of this turn's {budget:,}-token budget, and a session is never cut")
         return pack
 
     def handle(self, message):
