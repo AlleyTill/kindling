@@ -1,14 +1,13 @@
 """Plan section 5's three tests (Nexus), plus the fusion and session scoring it specifies."""
-import math
-
 import pytest
 
-from conftest import Clock, add_session
+from conftest import Clock, PointEmbedder, StubEmbedder, add_session
 from starter_agent.agent import Agent
 from starter_agent.config import Config
 from starter_agent.embed import HashEmbedder
 from starter_agent.models import FakeModel
-from starter_agent.recall import Memory, Recalled, estimate_tokens, fuse, rank_sessions, recall, render_session
+from starter_agent.recall import (Memory, Recalled, ensure_vectors, estimate_tokens, fuse, rank_sessions, recall,
+                                 render_session)
 from starter_agent.store import Store
 
 TOPICS = ["sourdough starters", "bicycle gearing", "tidal pools", "jazz chord voicings", "glacier retreat",
@@ -89,18 +88,6 @@ def test_recall_3b_exact_budget_edge_counts_the_separators(make_agent):
     assert len(recall(store, HashEmbedder(), "soil", budget=sum(costs) - 1)[1]) == 1
 
 
-class StubEmbedder:
-    """Dense similarity chosen by the test: each listed text gets that cosine with the query."""
-    name = "stub"
-
-    def __init__(self, cosine_with_query):
-        self.cosine = cosine_with_query
-
-    def embed(self, texts):
-        return [[c, math.sqrt(1 - c * c)] if (c := self.cosine.get(t)) is not None else [1.0, 0.0]
-                for t in texts]
-
-
 # 4. Reciprocal rank fusion with k = 60, dense weighted 2 and BM25 1; BM25 ranks only turns it matched.
 def test_recall_4_fusion_is_rrf_k60_dense_2_bm25_1():
     fused = fuse(dense=[0.9, 0.5, 0.1], lexical=[0.0, 2.0, 1.0])
@@ -128,17 +115,6 @@ def test_recall_5_session_scored_by_its_best_two_turns(make_agent):
     ranked = rank_sessions(store, embedder, "nothing in common")      # no shared words: dense only
     assert [sid for sid, _ in ranked] == [two, five, one]
     assert ranked[0][1] == pytest.approx(2 / 62 + 2 / 63)
-
-
-class PointEmbedder:
-    """Vectors chosen by the test, the query's included; any other text points somewhere else."""
-    name = "points"
-
-    def __init__(self, vectors):
-        self.vectors = vectors
-
-    def embed(self, texts):
-        return [self.vectors.get(text, [0.0, 0.0, 1.0]) for text in texts]
 
 
 # 4c. The dense index scores each turn against the query itself. The query has its own vector and shares

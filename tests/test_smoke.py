@@ -51,10 +51,11 @@ def test_idle_gap_ends_the_session_at_the_next_chat_and_curious_list_only_says_s
     assert "why is it raining?" in capsys.readouterr().out
 
 
-def test_curious_list_and_intentions_never_call_the_model_or_write(tmp_path, capsys):
+def test_the_commands_that_list_things_never_call_the_model_or_write(tmp_path, capsys):
     clock, model = Clock(), FakeModel()            # the demo model, recording every call
-    run = lambda *argv: main(["--config", str(tmp_path / "agent.json"), "--db", str(tmp_path / "agent.db"),
-                              *argv], model=model, clock=clock)
+    run = lambda *argv: main(["--db", str(tmp_path / "agent.db"), *argv], model=model, clock=clock)
+    run("chat", "remember: rats sleep by day")     # session 1, ended below, so there is something to list
+    run("session", "end")
     run("desire", "add", "Weigh the mice")         # desire #1
     run("chat", "why do the mice lose weight?")    # writes intention #1, serving desire #1
     run("desire", "drop", "1")
@@ -66,6 +67,10 @@ def test_curious_list_and_intentions_never_call_the_model_or_write(tmp_path, cap
     assert capsys.readouterr().out == (
         "(new)  active  Replicate figure 3  (current; your next chat turn writes it down)\n")   # not #1
     assert run("curious", "list") == 0 and "is still open" in capsys.readouterr().out
+    for argv in (["beliefs"], ["beliefs", "history", "1"], ["desire", "list"], ["session", "list"],
+                 ["session", "show", "1"], ["log"], ["recall", "rats"]):
+        assert run(*argv) == 0, argv
+    assert "is idle but still open" in capsys.readouterr().out          # recall says it isn't in yet
     assert len(model.calls) == calls                                   # no model call
     assert list(Store(str(tmp_path / "agent.db"), clock).db.iterdump()) == before   # no row written
     run("chat", "hello")                           # the next chat ends the idle session and writes it down
@@ -130,6 +135,9 @@ def test_a_row_and_its_key_are_written_together(make_agent):
             if sql.startswith("UPDATE beliefs SET key"):
                 raise sqlite3.OperationalError("disk I/O error (planted by the test)")
             return self.real.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self.real, name)
     real, store.db = store.db, KeyWriteFails(store.db)
     with pytest.raises(sqlite3.OperationalError):
         store.append("beliefs", {"text": "half-written", "confidence": 0.5, "evidence": "[1]", "flag": None})
@@ -147,9 +155,40 @@ def test_each_agent_has_its_own_private_memory_folder(tmp_path, monkeypatch):
         assert main(["--config", str(folder / "agent.json"), "chat", "hello"], clock=Clock()) == 0
         memory = folder / "memory"
         assert memory.is_dir() and [p.name for p in memory.iterdir()] == ["agent.db"]
-        assert stat.S_IMODE(memory.stat().st_mode) == 0o700
-        assert stat.S_IMODE((memory / "agent.db").stat().st_mode) == 0o600
     assert not (tmp_path / "memory").exists()           # no shared default location
-    (first / "memory" / "agent.db").chmod(0o644)
-    main(["--config", str(first / "agent.json"), "beliefs"], clock=Clock())
-    assert stat.S_IMODE((first / "memory" / "agent.db").stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are Linux and macOS only")
+def test_the_memory_folder_and_file_are_yours_alone(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "agent.json").write_text("{}")
+    assert main(["chat", "hello"], clock=Clock()) == 0
+    memory = tmp_path / "memory"
+    assert stat.S_IMODE(memory.stat().st_mode) == 0o700
+    assert stat.S_IMODE((memory / "agent.db").stat().st_mode) == 0o600
+    (memory / "agent.db").chmod(0o644)
+    main(["beliefs"], clock=Clock())
+    assert stat.S_IMODE((memory / "agent.db").stat().st_mode) == 0o600
+    shared = tmp_path / "lab-shared"                    # a folder that already exists keeps its permissions
+    shared.mkdir()
+    shared.chmod(0o775)
+    Store(str(shared / "agent.db"), Clock())
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o775 and stat.S_IMODE((shared / "agent.db").stat().st_mode) == 0o600
+
+
+def test_the_package_imports_only_the_standard_library():
+    """-S: no site-packages at all, as in a fresh venv with nothing installed (army test-engineer, r3)."""
+    code = ("import sys, starter_agent.cli, starter_agent.fixtures;"
+            "print(sorted({m.split('.')[0] for m in sys.modules} - set(sys.stdlib_module_names)"
+            " - {'starter_agent', '__main__'}))")
+    out = subprocess.run([sys.executable, "-S", "-c", code], capture_output=True, text=True,
+                         cwd=Path(__file__).parent.parent)
+    assert (out.returncode, out.stdout.strip()) == (0, "[]"), out.stderr
+
+
+def test_the_idle_gap_counts_from_the_last_message(make_agent):
+    agent = make_agent(fn=lambda messages: "ok")
+    for _ in range(4):
+        agent.handle("still here")
+        agent.store.clock.advance(20)       # 20 minutes between messages; 80 since the session began
+    assert len(agent.store.sessions()) == 1

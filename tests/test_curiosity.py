@@ -2,6 +2,8 @@
 import json
 import re
 
+import pytest
+
 from conftest import agent_turns, say, scripted
 from starter_agent import curiosity
 from starter_agent.embed import HashEmbedder, cosine

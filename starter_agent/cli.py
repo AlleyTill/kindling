@@ -1,13 +1,14 @@
 """The command line. Run `python -m starter_agent --help`."""
 import argparse
 import json
+import os
 import sys
 
 from . import bdi, curiosity
 from .agent import Agent, utc_now
 from .config import load_config
 from .embed import HashEmbedder, make_embedder
-from .models import make_model
+from .models import ModelError, make_model
 from .recall import render_session
 from .store import Store, local
 
@@ -17,12 +18,24 @@ HASH_NOTE = ("Note: the hash embedder is in use (the default). It matches shared
              "See 'Optional: better recall' in the README.")
 
 
-def build(config, model=None, clock=utc_now):
+def build(config, model=None, clock=utc_now, embeds=True, calls=True):
+    """The agent. Only a command that computes scores builds the embedder (and names the hash one), and only
+    one that calls the model builds the model: listing or deleting never needs a key or a download."""
     store = Store(config.db, clock)
-    embedder = make_embedder(config.embedder)
+    embedder = make_embedder(config.embedder) if embeds else None
     if isinstance(embedder, HashEmbedder):
-        print(HASH_NOTE, file=sys.stderr)                 # once, at startup
-    return Agent(store, model or make_model(config), embedder, config)
+        print(HASH_NOTE, file=sys.stderr)
+    if model is None and calls:
+        model = make_model(config)
+    return Agent(store, model, embedder, config)
+
+
+def number(text):
+    """An id or a rank: a whole number SQLite can hold."""
+    value = int(text)
+    if not -2**63 <= value < 2**63:
+        raise argparse.ArgumentTypeError(f"{text} is too large")
+    return value
 
 
 def ask(prompt):
@@ -32,6 +45,13 @@ def ask(prompt):
         return ""
 
 
+def tell(agent):
+    """What the agent recorded, skipped or couldn't do while running the command."""
+    for note in agent.notes:
+        print(f"  -- {note}")
+    agent.notes.clear()
+
+
 def show_belief(b):
     if b["flag"] == "removed":
         return f"#{b['id']}  [removed] {b['text']}"
@@ -39,12 +59,13 @@ def show_belief(b):
     line = f"#{b['id']}  {b['confidence']:.2f}  {b['text']}  (evidence: turns {why})"
     if b["supersedes"]:
         line += f"  supersedes #{b['supersedes']}"
-    return line + ("  [flagged for your review]" if b["flag"] == "review" else "")
+    return line + {"review": "  [flagged for your review]", "dropped": "  [dropped by you]"}.get(b["flag"], "")
 
 
 def cmd_chat(agent, a):
     if a.message:
         print(agent.handle(" ".join(a.message)))
+        tell(agent)
         return 0
     print("Type a message. /end ends the session, /quit leaves (the session stays open).")
     while True:
@@ -58,6 +79,7 @@ def cmd_chat(agent, a):
             print(f"Session ended; curiosity queued {len(agent.end_session())} question(s).")
         elif text:
             print("agent>", agent.handle(text))
+        tell(agent)
 
 
 def cmd_session(agent, a):
@@ -75,11 +97,12 @@ def cmd_session(agent, a):
     elif a.action == "show":
         print(render_session(store, a.id))
     elif a.action == "delete":
-        if not a.yes and ask(f"Delete session {a.id} and what it alone taught the agent? "
-                             "This can't be undone. Type yes: ") != "yes":
+        if not a.yes and ask(f"Delete session {a.id} and everything written in it (its turns, and the beliefs "
+                             "and questions from it)? This can't be undone. Type yes: ") != "yes":
             print("Nothing deleted.")
             return 1
         print(json.dumps(agent.delete_session(a.id), indent=1))
+    tell(agent)
     return 0
 
 
@@ -95,13 +118,13 @@ def cmd_desire(agent, a):
             print(f"#{d['id']}  rank {d['rank']}  {d['text']}  ({d['source']})")
     else:
         try:
-            desire_id = int(a.args[0])
+            desire_id = number(a.args[0])
             desire = store.latest("desires", desire_id)
-            if desire is None or desire["flag"] == "removed":
+            if desire is None or desire["flag"] == "removed" or not desire["live"]:   # dropped: add it again
                 raise ValueError
-            new_rank = a.rank if a.rank is not None or a.action == "drop" else int(a.args[1])
-        except (IndexError, ValueError):
-            print("Give the id of a desire (see: desire list), and for rank the new rank: desire rank ID N")
+            new_rank = a.rank if a.rank is not None or a.action == "drop" else number(a.args[1])
+        except (IndexError, ValueError, argparse.ArgumentTypeError):
+            print("Give the id of a live desire (see: desire list), and for rank the new rank: desire rank ID N")
             return 1
         if a.action == "rank":
             print(f"Desire is now #{bdi.rerank_desire(store, desire_id, new_rank)}, rank {new_rank}.")
@@ -111,6 +134,15 @@ def cmd_desire(agent, a):
 
 
 def cmd_beliefs(agent, a):
+    if a.action in ("ok", "drop"):                     # your word: it stands, or stop using it
+        flag = None if a.action == "ok" else "dropped"
+        new = bdi.review_belief(agent.store, a.id, flag) if a.id is not None else None
+        if new is None:
+            print("Give the id of a current belief (see: beliefs).")
+            return 1
+        print(f"Belief #{new}: " + ("it stands, no longer flagged." if flag is None else
+                                   "dropped; its history stays."))
+        return 0
     if a.action == "history":
         rows = agent.store.history("beliefs", a.id) if a.id is not None else []
         if not rows:
@@ -124,7 +156,12 @@ def cmd_beliefs(agent, a):
 
 
 def cmd_intentions(agent, a):
-    """Read-only, like every list: no model call, nothing written."""
+    """Read-only, like every list: no model call, nothing written. `intentions reopen ID` is your word."""
+    if a.action == "reopen":
+        new = bdi.reopen_intention(agent.store, a.id) if a.id is not None else None
+        print(f"Intention is active again (#{new})." if new else
+              "Give the id of a done intention (see: intentions).")
+        return 0 if new else 1
     desire, current = bdi.choose(agent.store)          # plain code, the same pick a chat turn makes
     live = {d["key"] for d in bdi.live_desires(agent.store)}
     for i in agent.store.current("intentions", "flag IS NOT 'removed'"):
@@ -162,7 +199,14 @@ def cmd_recall(agent, a):
     pack = agent.memory.recall(" ".join(a.query), agent.config.recall_budget_tokens)
     for session, score in pack.sessions:
         print(f"session {session}  score {score:.4f}  ({pack.scored_by})")
+    for session, score, tokens in pack.skipped:
+        print(f"session {session}  score {score:.4f}  skipped: ~{tokens:,} tokens, over the "
+              f"{agent.config.recall_budget_tokens:,}-token budget (a session is never cut)")
     print(f"\n{pack.text}" if pack.sessions else "Nothing recalled.")
+    idle = agent.idle_session()
+    if idle:
+        print(f"(Session {idle['id']} is idle but still open, so it isn't recalled yet; "
+              "your next chat ends it.)")
     return 0
 
 
@@ -175,7 +219,7 @@ def cmd_log(agent, a):
 def main(argv=None, model=None, clock=utc_now):
     p = argparse.ArgumentParser(prog="python -m starter_agent",
                                 description="A small agent that remembers, keeps beliefs, and wonders.")
-    p.add_argument("--config", default="agent.json", help="settings file (default: agent.json)")
+    p.add_argument("--config", help="settings file (default: agent.json, if there is one)")
     p.add_argument("--db", help="the database file (default: memory/agent.db beside agent.json; "
                                 "a relative --db is read from the current folder)")
     sub = p.add_subparsers(dest="command", required=True)
@@ -183,27 +227,41 @@ def main(argv=None, model=None, clock=utc_now):
     s.add_argument("message", nargs="*")
     s = sub.add_parser("session", help="end | list | show ID | delete ID [--yes]")
     s.add_argument("action", choices=["end", "list", "show", "delete"])
-    s.add_argument("id", nargs="?", type=int)
+    s.add_argument("id", nargs="?", type=number)
     s.add_argument("--yes", action="store_true", help="delete without asking")
     s = sub.add_parser("desire", help='add "TEXT" [--rank N] | list | rank ID N | drop ID')
     s.add_argument("action", choices=["add", "list", "rank", "drop"])
     s.add_argument("args", nargs="*")
-    s.add_argument("--rank", type=int, help="1 is the top; default: the bottom of the list")
-    s = sub.add_parser("beliefs", help="the current beliefs, or: history ID")
-    s.add_argument("action", nargs="?", default="list", choices=["list", "history"])
-    s.add_argument("id", nargs="?", type=int)
-    sub.add_parser("intentions", help="the intentions and their status")
+    s.add_argument("--rank", type=number, help="1 is the top; default: the bottom of the list")
+    s = sub.add_parser("beliefs", help="the current beliefs, or: history ID | ok ID | drop ID")
+    s.add_argument("action", nargs="?", default="list", choices=["list", "history", "ok", "drop"])
+    s.add_argument("id", nargs="?", type=number)
+    s = sub.add_parser("intentions", help="the intentions and their status, or: reopen ID")
+    s.add_argument("action", nargs="?", default="list", choices=["list", "reopen"])
+    s.add_argument("id", nargs="?", type=number)
     s = sub.add_parser("curious", help="list | drop ID | adopt ID [--rank N]")
     s.add_argument("action", choices=["list", "drop", "adopt"])
-    s.add_argument("id", nargs="?", type=int)
-    s.add_argument("--rank", type=int)
+    s.add_argument("id", nargs="?", type=number)
+    s.add_argument("--rank", type=number)
     s = sub.add_parser("recall", help="what recall would hand the model for this query")
     s.add_argument("query", nargs="+")
     sub.add_parser("log", help="what was dropped, and why")
     a = p.parse_args(argv)
-    agent = build(load_config(a.config, db=a.db), model, clock)
+    if a.config and not os.path.exists(a.config):
+        raise SystemExit(f"{a.config} doesn't exist. Leave out --config to use agent.json (or the defaults).")
+    calls = a.command == "chat" or (a.command == "session" and a.action == "end")
+    config = load_config(a.config or "agent.json", db=a.db)
+    agent = build(config, model, clock, calls or a.command == "recall", calls)
     try:
         return globals()[f"cmd_{a.command}"](agent, a)
+    except KeyboardInterrupt:
+        print("\nStopped. A message the model hadn't answered wasn't kept: send it again.")
+        return 130
+    except ModelError as error:
+        print(f"{error}. See 'Choose a real model' in the README.")
+        return 1
     except OSError as error:
         print(f"Could not reach the model: {error}. See 'Choose a real model' in the README.")
         return 1
+    finally:
+        tell(agent)

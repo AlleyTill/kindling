@@ -34,7 +34,8 @@ def test_every_command(cli, capsys, monkeypatch, tmp_path):
     assert cli("desire", "list") == 0
     assert out() == "#3  rank 1  Write the methods  (student)\n#4  rank 3  Replicate figure 3  (student)\n"
     # chat, one message and the interactive loop; intentions
-    assert cli("chat", "remember: the sample is 12 rats") == 0 and out() == "You said: remember: the sample is 12 rats\n"
+    assert cli("chat", "remember: the sample is 12 rats") == 0
+    assert out() == "You said: remember: the sample is 12 rats\n  -- belief #1 recorded: the sample is 12 rats\n"
     answers = iter(["why", "/end", "/quit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     assert cli("chat") == 0
@@ -77,10 +78,18 @@ def test_every_command(cli, capsys, monkeypatch, tmp_path):
     assert out().endswith("}\n")                                               # no beliefs left
     # mistakes get a message and exit code 1, not a traceback
     for argv in (["desire", "add"], ["desire", "rank", "3"], ["desire", "rank", "99", "1"], ["desire", "drop", "x"],
-                 ["beliefs", "history", "99"], ["curious", "drop", "99"], ["curious", "adopt"],
-                 ["session", "show", "99"], ["session", "delete"]):
+                 ["desire", "rank", "5", "1"], ["desire", "drop", "5"],                  # 5 was dropped above
+                 ["desire", "rank", "99999999999999999999", "1"], ["beliefs", "history", "99"],
+                 ["beliefs", "ok", "99"], ["beliefs", "drop"], ["intentions", "reopen", "99"],
+                 ["curious", "drop", "99"], ["curious", "adopt"], ["session", "show", "99"], ["session", "delete"]):
         assert cli(*argv) == 1, argv
         assert out().strip()
+    for argv in (["session", "show", "99999999999999999999"], ["curious", "drop", "-99999999999999999999"]):
+        try:                                      # argparse stops with its own message, not a traceback
+            code = cli(*argv)
+        except BaseException as stop:
+            code = getattr(stop, "code", stop)
+        assert code == 2, argv
 
 
 def test_a_mistake_in_agent_json_gets_a_message_not_a_traceback(cli, tmp_path):
@@ -102,17 +111,18 @@ def test_a_mistake_in_agent_json_gets_a_message_not_a_traceback(cli, tmp_path):
     assert cli("beliefs") == 0                                       # a whole number is a number too
 
 
-def test_an_unreachable_model_points_to_a_readme_section_that_exists(tmp_path, capsys):
+def test_an_unreachable_model_points_to_a_readme_section_that_exists(cli, capsys):
     def unreachable(messages):
         raise OSError("connection refused")
-    argv = ["--config", str(tmp_path / "agent.json"), "--db", str(tmp_path / "agent.db"), "chat", "hello"]
-    assert main(argv, model=FakeModel(fn=unreachable), clock=Clock()) == 1
+    assert cli("chat", "hello", model=FakeModel(fn=unreachable)) == 1
     (section,) = re.findall(r"See '([^']+)' in the README", capsys.readouterr().out)
     assert section in (Path(__file__).parent.parent / "README.md").read_text()
 
 
 @pytest.fixture
 def pacific(monkeypatch):
+    if not hasattr(time, "tzset"):
+        pytest.skip("Windows Python can't change the time zone inside a test")
     """Your computer's clock set to California in winter (UTC-8), for the length of one test."""
     monkeypatch.setenv("TZ", "PST8")
     time.tzset()
@@ -130,12 +140,15 @@ def test_times_are_shown_in_local_time(cli, capsys, pacific):
     assert capsys.readouterr().out.startswith("=== Session 1, 2026-11-19 01:00 to 2026-11-19 01:00 ===")
 
 
-def test_the_hash_embedder_is_named_once_at_startup(cli, capsys, tmp_path):
-    assert cli("beliefs") == 0
-    err = capsys.readouterr().err
-    assert err.count("the hash embedder is in use") == 1 and "don't measure the memory design" in err
+def test_the_hash_embedder_is_named_once_and_only_where_scores_are_made(cli, capsys):
+    for argv in (["chat", "hello"], ["recall", "hello"], ["session", "end"]):     # each makes scores
+        assert cli(*argv) == 0
+        err = capsys.readouterr().err
+        assert err.count("the hash embedder is in use") == 1 and "don't measure the memory design" in err, argv
     (section,) = re.findall(r"See '([^']+)' in the README", err)
     assert section in (Path(__file__).parent.parent / "README.md").read_text()
+    for argv in (["beliefs"], ["session", "list"], ["curious", "list"], ["log"], ["session", "delete", "1", "--yes"]):
+        assert cli(*argv) == 0 and capsys.readouterr().err == "", argv           # no scores, no note
 
 
 def test_the_readme_python_one_liner_lists_the_tables(tmp_path):

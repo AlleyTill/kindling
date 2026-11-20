@@ -5,7 +5,7 @@ old one (`supersedes`), never by editing it in place, so you can see how the age
 All versions of one record share a `key`: the id of its first version.
 
 The exceptions, said out loud:
-- a session's `title` (its first message) and `ended_at` are filled in place;
+- a session's `title` (its first message), `ended_at` and `read_at` (when curiosity read it) are filled in place;
 - deleting a session removes what it taught the agent (see Agent.delete_session). Your word wins;
 - a message the model never answered is taken back (take_back), so a retry isn't stored twice.
 """
@@ -17,7 +17,7 @@ from datetime import datetime
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (        -- AUTOINCREMENT: a deleted id is never handed out again,
     id INTEGER PRIMARY KEY AUTOINCREMENT,     -- so an old record never points at a new, unrelated turn
-    started_at TEXT, ended_at TEXT, title TEXT);
+    started_at TEXT, ended_at TEXT, title TEXT, read_at TEXT);
 CREATE TABLE IF NOT EXISTS turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER, n INTEGER, role TEXT, text TEXT, at TEXT);
 CREATE TABLE IF NOT EXISTS vectors (          -- one embedding per user turn, per embedder
@@ -42,6 +42,29 @@ CREATE TABLE IF NOT EXISTS log (              -- what was dropped, and why
 
 VERSIONED = ("beliefs", "desires", "intentions", "questions")
 META = ("id", "key", "supersedes", "at")
+KINDLING = 0x4B696E64                          # "Kind", in the file's header: this file is Kindling's memory
+ADDED = [("sessions", "read_at", "UPDATE sessions SET read_at=ended_at")]   # columns added since the first
+                                                                            # release, and how old rows fill them
+
+
+def check_ours(path):
+    """Refuse, before touching it, a file that isn't Kindling's memory: a typo in "db" mustn't change
+    another program's file. A new or empty file is fine."""
+    if os.path.isdir(path):
+        raise SystemExit(f'"{path}" is a folder: "db" should name a file, like memory/agent.db.')
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        return
+    try:
+        db = sqlite3.connect(path)               # reads the header only; writes nothing
+        app = db.execute("PRAGMA application_id").fetchone()[0]
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
+        db.close()
+    except sqlite3.DatabaseError:
+        app, tables = None, set()
+    # app 0 with Kindling's tables: a file from a Kindling older than the mark
+    if app != KINDLING and not (app == 0 and {"sessions", "turns", "beliefs"} <= tables):
+        raise SystemExit(f'{path} is not a Kindling memory file, so it was left alone: point "db" at a new '
+                         "file.")
 
 
 def make_private(path):
@@ -66,26 +89,44 @@ class Store:
     def __init__(self, path, clock):
         self.path = path
         self.clock = clock                     # a function returning the time now, as a datetime
+        self.depth = 0                         # how many transactions are open, one inside another
         if path != ":memory:":
+            check_ours(path)
             make_private(path)
         self.db = sqlite3.connect(path, isolation_level=None)   # each statement commits by itself
         self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA secure_delete=ON")     # deleted text is overwritten with zeros, at once
         self.db.executescript(SCHEMA)
+        for table, column, fill in ADDED:              # a file from an older Kindling gets the new columns
+            if column not in {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+                self.db.execute(fill)
+        if self.db.execute("PRAGMA application_id").fetchone()[0] != KINDLING:
+            self.db.execute(f"PRAGMA application_id={KINDLING}")
 
     def now(self):
         return self.clock().isoformat(timespec="seconds")
 
     @contextmanager
     def transaction(self):
-        """Everything inside is written together or not at all. One inside another is a savepoint."""
-        self.db.execute("SAVEPOINT tx")
+        """Everything inside is written together or not at all; one inside another is a savepoint. The
+        outermost takes the write lock first (BEGIN IMMEDIATE), so no other program can change the file
+        between what it reads and what it writes. However it ends, no transaction is left open."""
+        outer = self.depth == 0
+        self.depth += 1
         try:
+            self.db.execute("BEGIN IMMEDIATE" if outer else "SAVEPOINT tx")
             yield
+            self.db.execute("COMMIT" if outer else "RELEASE tx")
         except BaseException:
-            self.db.execute("ROLLBACK TO tx")
-            self.db.execute("RELEASE tx")
+            if not outer:
+                self.db.execute("ROLLBACK TO tx")
+                self.db.execute("RELEASE tx")
+            elif self.db.in_transaction:
+                self.db.execute("ROLLBACK")
             raise
-        self.db.execute("RELEASE tx")
+        finally:
+            self.depth -= 1
 
     # --- sessions and turns -------------------------------------------------------------------
 
@@ -100,6 +141,14 @@ class Store:
         self.db.execute("UPDATE sessions SET ended_at=? WHERE id=? AND ended_at IS NULL",
                         (self.now(), session_id))
 
+    def unread_sessions(self):
+        """Ended sessions curiosity hasn't read yet (its call failed, or was stopped), oldest first."""
+        return self.db.execute(
+            "SELECT * FROM sessions WHERE ended_at IS NOT NULL AND read_at IS NULL ORDER BY id").fetchall()
+
+    def mark_read(self, session_id):
+        self.db.execute("UPDATE sessions SET read_at=? WHERE id=?", (self.now(), session_id))
+
     def sessions(self):
         return self.db.execute("SELECT * FROM sessions ORDER BY id").fetchall()
 
@@ -107,18 +156,22 @@ class Store:
         return self.db.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
 
     def add_turn(self, session_id, role, text):
-        n = self.db.execute("SELECT COUNT(*) FROM turns WHERE session_id=?", (session_id,)).fetchone()[0]
-        if role == "user":
-            self.db.execute("UPDATE sessions SET title=? WHERE id=? AND title IS NULL",
-                            (text[:60], session_id))
-        return self.db.execute(
-            "INSERT INTO turns (session_id, n, role, text, at) VALUES (?, ?, ?, ?, ?)",
-            (session_id, n + 1, role, text, self.now())).lastrowid
+        with self.transaction():
+            n = self.db.execute("SELECT COUNT(*) FROM turns WHERE session_id=?", (session_id,)).fetchone()[0]
+            if role == "user":
+                self.db.execute("UPDATE sessions SET title=? WHERE id=? AND title IS NULL",
+                                (text[:60], session_id))
+            return self.db.execute(
+                "INSERT INTO turns (session_id, n, role, text, at) VALUES (?, ?, ?, ?, ?)",
+                (session_id, n + 1, role, text, self.now())).lastrowid
 
     def take_back(self, turn_id):
         """Remove your newest turn, which got no reply, and its embedding (and the title it gave)."""
-        session_id = self.db.execute("SELECT session_id FROM turns WHERE id=?", (turn_id,)).fetchone()[0]
         with self.transaction():
+            row = self.db.execute("SELECT session_id FROM turns WHERE id=?", (turn_id,)).fetchone()
+            if row is None:                    # already gone: the session was deleted meanwhile
+                return
+            session_id = row[0]
             self.db.execute("DELETE FROM vectors WHERE turn_id=?", (turn_id,))
             self.db.execute("DELETE FROM turns WHERE id=?", (turn_id,))
             self.db.execute("UPDATE sessions SET title=NULL WHERE id=? AND NOT EXISTS "
@@ -132,13 +185,19 @@ class Store:
         rows = self.db.execute(f"SELECT id FROM turns WHERE session_id IN ({marks})", list(session_ids))
         return {row[0] for row in rows}
 
+    def orphan_turn_ids(self):
+        """Turns whose session no longer exists (an older Kindling could leave them behind)."""
+        return {row[0] for row in self.db.execute(
+            "SELECT id FROM turns WHERE session_id NOT IN (SELECT id FROM sessions)")}
+
     def forget_session(self, session_id):
-        """Delete a session's turns, their embeddings, its log rows and the session itself."""
-        self.db.execute("DELETE FROM vectors WHERE turn_id IN (SELECT id FROM turns WHERE session_id=?)",
-                        (session_id,))
-        self.db.execute("DELETE FROM turns WHERE session_id=?", (session_id,))
-        self.db.execute("DELETE FROM log WHERE session_id=?", (session_id,))
+        """Delete the session, then every turn, embedding and log row whose session no longer exists: its
+        own, and any an older Kindling left behind."""
         self.db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+        orphan = "session_id NOT IN (SELECT id FROM sessions)"
+        self.db.execute(f"DELETE FROM vectors WHERE turn_id IN (SELECT id FROM turns WHERE {orphan})")
+        self.db.execute(f"DELETE FROM turns WHERE {orphan}")
+        self.db.execute(f"DELETE FROM log WHERE {orphan}")
 
     # --- versioned records: beliefs, desires, intentions, questions ---------------------------
 

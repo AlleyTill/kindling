@@ -1,6 +1,8 @@
 """Shared test helpers. Every test uses FakeModel and HashEmbedder: no network, no downloads."""
 import json
+import math
 import re
+import socket
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -41,6 +43,7 @@ def scripted(act_replies, curiosity=lambda prompt: '{"questions": []}'):
     def fn(messages):
         if messages[0]["content"] == curiosity_module.SYSTEM:
             return curiosity(messages[-1]["content"])
+        assert queue, f"scripted {len(act_replies)} replies, and the agent asked for more"
         return queue.pop(0)
     return fn
 
@@ -52,10 +55,23 @@ def agent_turns(prompt):
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    """The tests never reach a real model: any attempt fails the test."""
+    """The tests never reach a real model: any attempt to connect, or to look a name up, fails the test."""
     def refuse(*args, **kwargs):
         raise AssertionError("a test tried to reach a model over the network")
-    monkeypatch.setattr("starter_agent.models.urllib.request.urlopen", refuse)
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket, "getaddrinfo", refuse)
+
+
+@pytest.fixture(autouse=True)
+def fast_files(monkeypatch):
+    """Test databases skip the wait for the disk after each write (synchronous=OFF): same bytes in the file,
+    a few times faster. The agent itself keeps SQLite's safe default."""
+    real = Store.__init__
+
+    def init(self, *args, **kwargs):
+        real(self, *args, **kwargs)
+        self.db.execute("PRAGMA synchronous=OFF")
+    monkeypatch.setattr(Store, "__init__", init)
 
 
 @pytest.fixture
@@ -70,12 +86,37 @@ def make_agent(tmp_path):
 def cli(tmp_path):
     """Run the command line on a fresh database, ignoring any agent.json in the working folder."""
     clock = Clock()
+    settings = tmp_path / "agent.json"
+    if not settings.exists():
+        settings.write_text("{}")
 
-    def run(*argv):
-        return main(["--config", str(tmp_path / "agent.json"), "--db", str(tmp_path / "agent.db"), *argv],
-                    clock=clock)
+    def run(*argv, model=None):
+        return main(["--config", str(settings), "--db", str(tmp_path / "agent.db"), *argv], model=model, clock=clock)
     run.clock = clock
     return run
+
+
+class StubEmbedder:
+    """Dense similarity chosen by the test: each listed text gets that cosine with the query."""
+    name = "stub"
+
+    def __init__(self, cosine_with_query):
+        self.cosine = cosine_with_query
+
+    def embed(self, texts):
+        return [[c, math.sqrt(1 - c * c)] if (c := self.cosine.get(t)) is not None else [1.0, 0.0]
+                for t in texts]
+
+
+class PointEmbedder:
+    """Vectors chosen by the test, the query's included; any other text points somewhere else."""
+    name = "points"
+
+    def __init__(self, vectors):
+        self.vectors = vectors
+
+    def embed(self, texts):
+        return [self.vectors.get(text, [0.0, 0.0, 1.0]) for text in texts]
 
 
 def add_session(store, turns):

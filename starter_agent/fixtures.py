@@ -58,11 +58,11 @@ def recall_alone(budget_tokens=60):
 # --- BDI: one session, two desires, and the JSON block a model might send ------------------------------
 BDI_SESSIONS = [[("user", "We weigh the mice on Mondays."), ("agent", "Noted.")]]          # turns 1 and 2
 BDI_DESIRES = [("Write the methods section", 2), ("Replicate figure 3", 1)]
-BDI_BLOCK = json.dumps({"beliefs": [
+BDI_BLOCK = {"beliefs": [                                                                    # parsed
     {"text": "The mice are weighed on Mondays", "confidence": 0.8, "evidence": [1]},        # kept
     {"text": "The mice are weighed daily", "confidence": 0.9, "evidence": [99]},            # no turn 99
     {"text": "The mice are fine", "confidence": 1.5, "evidence": [1]}],                     # over 1
-    "intention_done": []})
+    "intention_done": []}
 
 
 def bdi_alone():
