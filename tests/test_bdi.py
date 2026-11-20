@@ -559,3 +559,11 @@ def test_bdi_12_a_session_recall_did_not_pick_is_never_sent(make_agent):
     add_session(agent.store, [("user", "my bank PIN is 4417"), ("agent", "noted")])
     agent.handle("hello")
     assert "4417" not in json.dumps(agent.model.calls)
+
+
+def test_bdi_13_a_new_desire_goes_to_the_bottom_by_default(make_agent):
+    """What `desire add --help` promises (army test-engineer M20)."""
+    store = make_agent().store
+    bdi.add_desire(store, "first", rank=1)
+    bdi.add_desire(store, "third", rank=3)
+    assert store.get("desires", bdi.add_desire(store, "no rank given"))["rank"] == 4

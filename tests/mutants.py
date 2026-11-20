@@ -384,6 +384,9 @@ MUTANTS = [
         "if type(old) is int and abs(old) < 2**63 else None", "if type(old) is int else None")]),
     ("a question is stored on one line", "starter_agent/curiosity.py", [(
         '"text": one_line(question["text"]), "quote"', '"text": question["text"].strip(), "quote"')]),
+    ("a new desire goes to the bottom by default", "starter_agent/bdi.py", [(
+        'return max([d["rank"] for d in live_desires(store)], default=0) + 1',
+        'return min([d["rank"] for d in live_desires(store)], default=0) + 1')]),
     # --- Round 3: the command line -----------------------------------------------------------------------
     ("listing and deleting need no key", "starter_agent/cli.py", [(
         '    calls = a.command == "chat" or (a.command == "session" and a.action == "end")', "    calls = True")]),
