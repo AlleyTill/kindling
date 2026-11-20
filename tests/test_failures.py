@@ -151,6 +151,25 @@ def test_the_outermost_transaction_takes_the_write_lock_before_it_reads(make_age
     other.rollback()
 
 
+def test_ctrl_c_as_a_nested_savepoint_begins_leaves_ctrl_c_and_nothing_written(make_agent):
+    """Red-hat FS-83c9b74dd4e8: Ctrl-C lands as adopt's second write opens its savepoint."""
+    store = make_agent().store
+    sid, (turn, _) = add_session(store, [("agent", "I am not sure why it fails."), ("user", "ok")])
+    qid = store.append("questions", {"text": "Why?", "quote": "not sure why", "source_turn": turn,
+                                     "session_id": sid, "status": "open"})
+
+    class CtrlCAfterTheDesire(Fails):              # armed by the desire's INSERT, fired at the next savepoint
+        def execute(self, sql, *args):
+            if sql.startswith("INSERT INTO desires"):
+                self.prefix = "SAVEPOINT"
+            return super().execute(sql, *args)
+    store.db = CtrlCAfterTheDesire(store.db, "never", KeyboardInterrupt())
+    assert isinstance(outcome(curiosity.adopt, store, qid), KeyboardInterrupt)
+    store.db = store.db.real
+    assert not store.db.in_transaction and store.db.execute("SELECT COUNT(*) FROM desires").fetchone()[0] == 0
+    assert curiosity.adopt(store, qid) and store.db.execute("SELECT COUNT(*) FROM desires").fetchone()[0] == 1
+
+
 def test_ctrl_c_inside_a_transaction_rolls_it_back(make_agent):
     store = make_agent().store
     with pytest.raises(KeyboardInterrupt):
@@ -189,12 +208,16 @@ def test_ctrl_c_after_the_reply_arrives_keeps_nothing(make_agent, monkeypatch):
     assert roles(agent.store) == [] and bdi.current_beliefs(agent.store) == []
 
 
-def test_a_broken_character_in_a_message_or_reply_is_repaired_not_a_crash(make_agent):
-    agent = make_agent(replies=[say("half an emoji \ud83d", beliefs=[{"text": "odd \udcff byte", "confidence": 0.5,
-                                                                     "evidence": [1]}])])
+def test_a_broken_character_is_repaired_in_a_turn_and_rejected_in_a_belief(make_agent):
+    agent = make_agent(replies=[say("half an emoji \ud83d", beliefs=[
+        {"text": "kept before", "confidence": 0.5, "evidence": [1]},
+        {"text": "odd \udcff byte", "confidence": 0.5, "evidence": [1]},          # dropped and logged
+        {"text": "kept after", "confidence": 0.5, "evidence": [1]}])])
     assert outcome(agent.handle, "caf\udce9") == "half an emoji ?"
     assert [t["text"] for t in agent.store.turns(1)] == ["caf?", "half an emoji ?"]
-    assert [b["text"] for b in bdi.current_beliefs(agent.store)] == ["odd ? byte"]
+    assert [b["text"] for b in bdi.current_beliefs(agent.store)] == ["kept before", "kept after"]
+    (reason,) = [r[0] for r in agent.store.db.execute("SELECT reason FROM log WHERE kind='rejected belief'")]
+    assert "broken character" in reason
 
 
 # --- Curiosity: a failed read is logged, and tried again until it reads ------------------------------------

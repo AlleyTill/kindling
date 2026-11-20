@@ -139,6 +139,8 @@ def check_belief(store, change, allowed):
     text, confidence = change.get("text"), change.get("confidence")
     if not isinstance(text, str) or not one_line(text):
         return "no text"
+    if text != text.encode("utf-8", "replace").decode("utf-8"):
+        return "text with a broken character (not valid UTF-8)"     # never stored half-right (section 4)
     if len(one_line(text)) > LONGEST:
         return f"text longer than {LONGEST} characters"
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:

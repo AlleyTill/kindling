@@ -17,8 +17,6 @@ from . import bdi, curiosity
 from .models import check_fits, clean, context_of, estimate_tokens, split_json, text_of
 from .recall import Memory, Recalled, render_session
 
-ACT_KEYS = ("beliefs", "intention_done")
-
 
 def utc_now():
     return datetime.now(timezone.utc)
@@ -86,7 +84,7 @@ class Agent:
             # ACT: one call, refused before it's sent if it can't fit the model's context.
             messages = bdi.act_messages(pack.text, beliefs, intention, this)
             check_fits(messages, context_of(self.config))
-            reply, changes = split_json(clean(text_of(self.model.complete(messages))), ACT_KEYS)
+            reply, changes = split_json(clean(text_of(self.model.complete(messages))))
 
             # RECORD: the reply and its changes together, only while the session exists (you may have
             # deleted it from another terminal while the model answered). Evidence: turns the model saw.

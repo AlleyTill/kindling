@@ -112,17 +112,18 @@ class Store:
         """Everything inside is written together or not at all; one inside another is a savepoint. The
         outermost takes the write lock first (BEGIN IMMEDIATE), so no other program can change the file
         between what it reads and what it writes. However it ends, no transaction is left open."""
-        outer = self.depth == 0
+        outer, begun = self.depth == 0, False
         self.depth += 1
         try:
             self.db.execute("BEGIN IMMEDIATE" if outer else "SAVEPOINT tx")
+            begun = True
             yield
             self.db.execute("COMMIT" if outer else "RELEASE tx")
         except BaseException:
-            if not outer:
+            if not outer and begun:            # undo this savepoint; the outermost undoes the rest
                 self.db.execute("ROLLBACK TO tx")
                 self.db.execute("RELEASE tx")
-            elif self.db.in_transaction:
+            elif outer and self.db.in_transaction:
                 self.db.execute("ROLLBACK")
             raise
         finally:

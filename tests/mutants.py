@@ -261,7 +261,9 @@ MUTANTS = [
         'if overrides.get("db") is None and db != ":memory:"', 'if db != ":memory:"')]),
     # --- Round 3: a second terminal, a full disk, Ctrl-C, a reply the agent can't use ----------------------
     ("a failed write leaves no transaction open", "starter_agent/store.py", [(
-        '            elif self.db.in_transaction:\n                self.db.execute("ROLLBACK")\n', "")]),
+        '            elif outer and self.db.in_transaction:\n                self.db.execute("ROLLBACK")\n', "")]),
+    ("Ctrl-C as a savepoint opens is still Ctrl-C, and nothing is written", "starter_agent/store.py", [(
+        "            if not outer and begun:", "            if not outer:")]),
     ("the outermost transaction takes the write lock first", "starter_agent/store.py", [(
         '"BEGIN IMMEDIATE" if outer', '"BEGIN" if outer')]),
     ("deleted text is overwritten at once (secure_delete)", "starter_agent/store.py", [(
@@ -281,13 +283,13 @@ MUTANTS = [
         "            with self.store.transaction():\n                if self.store.session(sid)",
         "            if True:\n                if self.store.session(sid)")]),
     ("a reply that isn't text is a model error", "starter_agent/agent.py", [(
-        "split_json(clean(text_of(self.model.complete(messages))), ACT_KEYS)",
-        "split_json(clean(self.model.complete(messages)), ACT_KEYS)")]),
+        "split_json(clean(text_of(self.model.complete(messages))))",
+        "split_json(clean(self.model.complete(messages)))")]),
     ("your message is cleaned before it's stored", "starter_agent/agent.py", [(
         "        message = clean(message)\n", "")]),
     ("the reply is cleaned before it's stored", "starter_agent/agent.py", [(
-        "split_json(clean(text_of(self.model.complete(messages))), ACT_KEYS)",
-        "split_json(text_of(self.model.complete(messages)), ACT_KEYS)")]),
+        "split_json(clean(text_of(self.model.complete(messages))))",
+        "split_json(text_of(self.model.complete(messages)))")]),
     ("curiosity that failed is tried again", "starter_agent/agent.py", [(
         "        for unread in self.store.unread_sessions():",
         "        for unread in [session] if session else []:")]),
@@ -329,7 +331,7 @@ MUTANTS = [
     ("an HTTP error shows what the server said", "starter_agent/models.py", [(
         "f\"{error.read().decode('utf-8', 'replace')[:300]}\"", '""')]),
     ("a reply that isn't JSON is a model error", "starter_agent/models.py", [(
-        "    except ValueError:\n        raise ModelError", "    except KeyError:\n        raise ModelError")]),
+        "    except ValueError:\n        start = raw", "    except KeyError:\n        start = raw")]),
     ("a reply of the wrong shape is a model error", "starter_agent/models.py", [(
         "    except (KeyError, IndexError, TypeError):", "    except ZeroDivisionError:")]),
     ("the usual key goes only to the provider's own address", "starter_agent/models.py", [(
@@ -373,6 +375,8 @@ MUTANTS = [
         '            notes.append(f"intention #{new} marked done', '            (f"intention #{new} marked done')]),
     ("a reply with no block is logged", "starter_agent/bdi.py", [(
         '        store.log(session_id, "rejected", "the reply had no ```json block of belief changes")\n', "")]),
+    ("a belief with a broken character is rejected, never stored half-right", "starter_agent/bdi.py", [(
+        '    if text != text.encode("utf-8", "replace").decode("utf-8"):', "    if False:")]),
     ("a belief over 500 characters is rejected", "starter_agent/bdi.py", [(
         "    if len(one_line(text)) > LONGEST:", "    if False:")]),
     ("supersedes past SQLite's range is rejected, not a crash", "starter_agent/bdi.py", [(

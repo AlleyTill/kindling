@@ -240,7 +240,7 @@ def one_line(text):
     return " ".join(clean(text).split())
 
 
-def split_json(text, keys):
+def split_json(text, keys=("beliefs", "intention_done")):
     """Split a model's output into (the prose, its last fenced JSON block as an object), or (text, None).
     The block counts only if it is an object whose keys are all in `keys`, so an example block you asked
     for stays in the reply. The fence may be ```json, ```JSON or bare ```. Found with str.rfind, not a
