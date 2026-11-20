@@ -157,3 +157,122 @@ def test_the_readme_python_one_liner_lists_the_tables(tmp_path):
     Store(str(tmp_path / "memory" / "agent.db"), Clock())
     out = subprocess.run([sys.executable, *shlex.split(line)[1:]], cwd=tmp_path, capture_output=True, text=True)
     assert out.returncode == 0 and "('beliefs',)" in out.stdout, out.stderr
+
+
+# --- Round 3 --------------------------------------------------------------------------------------------
+
+def test_another_embedder_gets_no_hash_note_and_its_own_name_on_every_score(cli, capsys, monkeypatch):
+    """The r2 verifier's W12 and W13: with bge-small (here a stub), nothing may still say hash-256."""
+    from conftest import StubEmbedder
+    monkeypatch.setattr("starter_agent.cli.make_embedder", lambda name: StubEmbedder({}))
+    assert cli("chat", "tidal pools") == 0 and cli("session", "end") == 0
+    capsys.readouterr()
+    assert cli("recall", "tidal", "pools") == 0
+    captured = capsys.readouterr()
+    assert "hash" not in captured.err and "hash" not in captured.out
+    assert captured.out.splitlines()[0].endswith("(RRF of BM25 and the stub embedder)")
+
+
+def test_a_relative_db_is_taken_as_typed(tmp_path, monkeypatch):
+    """The r2 verifier's W22 (Nexus d): --db is read from the current folder, not moved beside agent.json."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "agent.json").write_text("{}")
+    assert main(["--config", "elsewhere/agent.json", "--db", "mine.db", "chat", "hello"], clock=Clock()) == 0
+    assert (tmp_path / "mine.db").exists() and not (tmp_path / "elsewhere" / "mine.db").exists()
+
+
+def test_settings_out_of_range_or_a_key_in_api_key_env_stop_with_a_message(cli, tmp_path, capsys):
+    pretend_key = "sk-ant-api03-PRETEND-KEY-0000"
+    for text, message in (('{"question_queue": 0}', '"question_queue" should be from 1'),
+                          ('{"idle_minutes": -1}', '"idle_minutes" should be from 0'),
+                          ('{"idle_minutes": 9999999999999}', '"idle_minutes" should be from 0'),
+                          ('{"recall_budget_tokens": -5}', '"recall_budget_tokens" should be from 0'),
+                          ('{"dedupe_similarity": 1.5}', '"dedupe_similarity" should be from 0 to 1'),
+                          ('{"dedupe_similarity": NaN}', '"dedupe_similarity" should be from 0 to 1'),
+                          ('{"context_tokens": -1}', '"context_tokens" should be from 0'),
+                          (f'{{"backend": "anthropic", "api_key_env": "{pretend_key}"}}', "the NAME of a variable")):
+        (tmp_path / "agent.json").write_text(text)
+        try:
+            stopped = cli("beliefs")
+        except BaseException as error:
+            stopped = error
+        assert isinstance(stopped, SystemExit) and message in str(stopped.code), (text, stopped)
+        assert pretend_key not in str(stopped.code)                       # a key is never printed back
+
+
+def test_a_db_under_your_home_folder_is_expanded_and_an_empty_one_refused(tmp_path, monkeypatch):
+    from starter_agent.config import load_config
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "agent.json").write_text('{"db": "~/kindling/agent.db"}')
+    assert load_config(str(tmp_path / "agent.json")).db == str(tmp_path / "home" / "kindling" / "agent.db")
+    (tmp_path / "agent.json").write_text('{"db": ""}')
+    try:
+        stopped = load_config(str(tmp_path / "agent.json"))
+    except SystemExit as error:
+        stopped = error
+    assert isinstance(stopped, SystemExit) and '"db" is empty' in str(stopped.code)
+
+
+def test_a_mistyped_config_stops_instead_of_running_on_the_defaults(tmp_path):
+    try:
+        stopped = main(["--config", str(tmp_path / "agnet.json"), "--db", str(tmp_path / "agent.db"), "chat", "hi"],
+                       clock=Clock())
+    except SystemExit as error:
+        stopped = error
+    assert isinstance(stopped, SystemExit) and "agnet.json doesn't exist" in str(stopped.code)
+    assert not (tmp_path / "agent.db").exists()
+
+
+def test_ctrl_c_while_waiting_for_a_reply_prints_a_line_not_a_traceback(cli, capsys):
+    def interrupted(messages):
+        raise KeyboardInterrupt
+    try:
+        code = cli("chat", "hello", model=FakeModel(fn=interrupted))
+    except BaseException as error:                 # a traceback must fail by assertion, not stop pytest
+        code = error
+    assert code == 130
+    assert "wasn't kept: send it again" in capsys.readouterr().out
+    assert cli("session", "show", "1") == 0 and "[turn" not in capsys.readouterr().out
+
+
+def test_a_model_error_is_a_message_with_what_the_server_said(cli, capsys):
+    from starter_agent.models import ModelError
+
+    def refused(messages):
+        raise ModelError("The model server answered HTTP 400: unknown parameter fallbacks")
+    assert cli("chat", "hello", model=FakeModel(fn=refused)) == 1
+    out = capsys.readouterr().out
+    assert "unknown parameter fallbacks" in out and "Could not reach" not in out
+
+
+def test_list_and_delete_need_no_key(cli, tmp_path, monkeypatch, capsys):
+    """A key you revoked mustn't stand between you and `session delete` (army red-hat-tester, r3)."""
+    assert cli("chat", "hello") == 0
+    (tmp_path / "agent.json").write_text('{"backend": "anthropic"}')
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for argv in (["session", "list"], ["beliefs"], ["log"], ["recall", "hello"], ["session", "delete", "1", "--yes"]):
+        try:
+            code = cli(*argv)
+        except SystemExit as stop:
+            code = stop.code
+        assert code == 0, argv
+
+
+def test_log_beliefs_ok_drop_and_intentions_reopen_from_the_command_line(cli, capsys, tmp_path):
+    from conftest import say
+    from starter_agent.store import Store
+    reply = say("Done.", beliefs=[{"text": "ghost", "confidence": 0.5, "evidence": [999]}], done=[1])
+    assert cli("desire", "add", "Replicate figure 3") == 0
+    assert cli("chat", "figure 3 is done", model=FakeModel([reply])) == 0
+    out = capsys.readouterr().out
+    assert "intention #2 marked done" in out and "1 proposed change(s) rejected (see: log)" in out
+    assert cli("log") == 0 and "rejected belief: evidence [999] is not a turn" in capsys.readouterr().out
+    assert cli("intentions", "reopen", "2") == 0 and "active again" in capsys.readouterr().out
+    assert cli("intentions") == 0 and capsys.readouterr().out == "#3  active  Replicate figure 3  (current)\n"
+    store = Store(str(tmp_path / "agent.db"), Clock())
+    store.append("beliefs", {"text": "the plot matches", "confidence": 0.6, "evidence": "[1]", "flag": "review"})
+    assert cli("beliefs", "ok", "1") == 0 and cli("beliefs") == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "#2  0.60  the plot matches  (evidence: turns 1)  supersedes #1"
+    assert cli("beliefs", "drop", "2") == 0 and cli("beliefs") == 0
+    assert capsys.readouterr().out.endswith("dropped; its history stays.\n")
