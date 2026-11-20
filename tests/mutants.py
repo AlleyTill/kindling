@@ -132,7 +132,8 @@ MUTANTS = [
     ("questions from the session are removed", "starter_agent/curiosity.py", [(
         "    if not gone:\n        return 0\n", "    return 0\n")]),
     ("the session's log rows are deleted", "starter_agent/store.py", [(
-        '        self.db.execute(f"DELETE FROM log WHERE {orphan}")\n', "")]),
+        '        self.db.execute(f"DELETE FROM log WHERE session_id IS NOT NULL AND {orphan}")'
+        "   # keep the delete records\n", "")]),
     ("the session's embeddings are deleted", "starter_agent/store.py", [(
         "DELETE FROM vectors WHERE turn_id IN", "SELECT * FROM vectors WHERE turn_id IN")]),
     ("deleted text doesn't linger in free space", "starter_agent/agent.py", [(
@@ -294,7 +295,8 @@ MUTANTS = [
         "        for unread in self.store.unread_sessions():",
         "        for unread in [session] if session else []:")]),
     ("curiosity's failure is logged, whatever it was", "starter_agent/agent.py", [(
-        "            except Exception as error:     # it stays unread, and the next session end tries again",
+        "            except Exception as error:     # the model can't be reached: it stays unread, and the next end"
+        " tries again",
         "            except OSError as error:")]),
     ("curiosity writes nothing for a session deleted meanwhile", "starter_agent/curiosity.py", [(
         "        if store.session(session_id) is None:\n            return []\n", "")]),
