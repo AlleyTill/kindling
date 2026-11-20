@@ -374,7 +374,8 @@ MUTANTS = [
     ("an intention the reply marks done is shown, with how to undo it", "starter_agent/bdi.py", [(
         '            notes.append(f"intention #{new} marked done', '            (f"intention #{new} marked done')]),
     ("a reply with no block is logged", "starter_agent/bdi.py", [(
-        '        store.log(session_id, "rejected", "the reply had no ```json block of belief changes")\n', "")]),
+        '        store.log(session_id, "rejected",\n'
+        '                  "the reply had no ```json block holding only beliefs and intention_done")\n', "")]),
     ("a belief with a broken character is rejected, never stored half-right", "starter_agent/bdi.py", [(
         '    if text != text.encode("utf-8", "replace").decode("utf-8"):', "    if False:")]),
     ("a belief over 500 characters is rejected", "starter_agent/bdi.py", [(

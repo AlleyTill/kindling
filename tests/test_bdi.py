@@ -480,6 +480,17 @@ def test_bdi_8b_the_models_block_cannot_rank_or_add_desires(make_agent):
     assert store.db.execute("SELECT * FROM desires").fetchall() == before
 
 
+def test_bdi_8c_recording_ignores_desires_and_ranks_even_in_a_block_that_gets_through(make_agent):
+    """The layer under split_json's key check, tested on its own: record_changes never touches a desire."""
+    store = make_agent().store
+    sid, (turn, _) = add_session(store, [("user", "What first?"), ("agent", "ok")])
+    bdi.add_desire(store, "Replicate figure 3", rank=1)
+    before = store.db.execute("SELECT * FROM desires").fetchall()
+    bdi.record_changes(store, {"beliefs": [], "intention_done": [], "desires": ["Publish"], "ranks": {"1": 9}},
+                       {turn}, sid, None)
+    assert store.db.execute("SELECT * FROM desires").fetchall() == before
+
+
 def test_bdi_9_a_done_intention_keeps_its_other_evidence_and_stays_done(make_agent):
     agent = make_agent(replies=[say("Done.", done=[1, 3])])
     store = agent.store
@@ -511,7 +522,7 @@ def test_bdi_10_a_broken_block_is_logged_and_the_reply_still_stands(make_agent):
             assert False, (message, crash)
     assert bdi.current_beliefs(agent.store) == []
     assert [(row["kind"], row["reason"].split(",")[0]) for row in agent.store.db.execute("SELECT * FROM log")] == [
-        ("rejected", "the reply had no ```json block of belief changes"),
+        ("rejected", "the reply had no ```json block holding only beliefs and intention_done"),
         ("rejected belief", "not a JSON object"),
         ("rejected", '"beliefs" is not a list'),
         ("rejected belief", "no text"), ("rejected belief", "no text"),

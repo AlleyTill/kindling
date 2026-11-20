@@ -160,7 +160,8 @@ def record_changes(store, changes, allowed, session_id, intention):
     """Store the valid changes from Act's JSON block (already parsed); log the rest. Returns a line for
     you about each change, so you see everything the model's reply wrote."""
     if changes is None:
-        store.log(session_id, "rejected", "the reply had no ```json block of belief changes")
+        store.log(session_id, "rejected",
+                  "the reply had no ```json block holding only beliefs and intention_done")
         return ["the reply had no block of belief changes, so nothing was recorded (see: log)"]
     if not isinstance(changes, dict):
         store.log(session_id, "rejected", "the JSON block is not an object", json.dumps(changes))

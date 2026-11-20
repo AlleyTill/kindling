@@ -231,7 +231,7 @@ def test_curiosity_that_fails_is_logged_and_tried_again_at_the_next_session_end(
             raise failure
         return demo_brain(messages)
     agent = make_agent(fn=model)
-    agent.handle("why do the mice lose weight?")
+    assert outcome(agent.handle, "why do the mice lose weight?").startswith("You said")
     first = outcome(agent.end_session)
     assert agent.store.open_session() is None                          # the session ends anyway
     assert curiosity.open_questions(agent.store) == []
