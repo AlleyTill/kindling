@@ -1,5 +1,5 @@
 """The model backends, offline: what each one sends and where, what it does with a reply it can't use, and
-how the agent reads what a model wrote. A fake `post_json` stands in for the network; no request leaves."""
+how the agent reads what a model wrote. A fake urlopen stands in for every server; no request leaves."""
 import json
 import socket
 import time
@@ -9,12 +9,19 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import Clock
 from starter_agent import models
+from starter_agent.agent import Agent
 from starter_agent.config import Config
-from starter_agent.models import (Anthropic, ModelError, Ollama, OpenAICompatible, check_fits, estimate_tokens,
-                                  split_json)
+from starter_agent.embed import HashEmbedder
+from starter_agent.models import (Anthropic, ModelError, Ollama, OpenAICompatible, PromptTooLong, check_fits,
+                                  estimate_tokens, split_json)
+from starter_agent.store import Store
 
 MESSAGES = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}]
+OLLAMA_VERSION = "http://localhost:11434/api/version"
+TOO_LONG = {"error": "request (1757 tokens) exceeds the available context size (256 tokens), try increasing it",
+            "type": "exceed_context_size_error", "n_prompt_tokens": 1757, "n_ctx": 256}   # Ollama 0.32.1's (Nexus)
 
 
 def outcome(call, *args):
@@ -25,15 +32,36 @@ def outcome(call, *args):
         return error
 
 
+class Answer(BytesIO):
+    """A scripted reply, as urllib hands one back."""
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 @pytest.fixture
 def wire(monkeypatch):
-    """Stands in for the network: records each request in .sent and answers with .reply."""
-    line = SimpleNamespace(reply=None, sent=[])
+    """Stands in for every server at urllib's own door, so no request leaves this computer. Each POST is
+    recorded in .sent as (url, body, headers) and answered with .reply, or refused with .refusal = (HTTP
+    status, body). Each GET is recorded in .asked as (url, headers) and answered with .facts[url], or with
+    HTTP 404 if there's none. Header names are lower case."""
+    line = SimpleNamespace(reply=None, refusal=None, facts={}, sent=[], asked=[])
 
-    def post_json(url, body, headers=None, timeout=600):
-        line.sent.append((url, body, headers or {}))
-        return line.reply
-    monkeypatch.setattr(models, "post_json", post_json)
+    def open_(opener, request, timeout=None):
+        url, headers = request.full_url, {k.lower(): v for k, v in request.header_items()}
+        if request.data is None:
+            line.asked.append((url, headers))
+            if url not in line.facts:
+                raise urllib.error.HTTPError(url, 404, "Not Found", {}, BytesIO(b"404 page not found"))
+            return Answer(json.dumps(line.facts[url]).encode())
+        line.sent.append((url, json.loads(request.data), headers))
+        if line.refusal:
+            status, body = line.refusal
+            raise urllib.error.HTTPError(url, status, "Refused", {}, BytesIO(json.dumps(body).encode()))
+        return Answer(json.dumps(line.reply).encode())
+    monkeypatch.setattr("urllib.request.OpenerDirector.open", open_)
     return line
 
 
@@ -44,6 +72,7 @@ def test_ollama_request_and_reply(wire):
     assert Ollama().complete(MESSAGES) == "hello"
     ((url, body, _),) = wire.sent
     assert url == "http://localhost:11434/api/chat" and body["messages"] == MESSAGES and body["stream"] is False
+    assert body.get("truncate") is False                             # too long: refuse, never cut
     assert body["options"]["num_ctx"] == models.context_of(Config(backend="ollama")) == 12288
 
 
@@ -55,13 +84,74 @@ def test_one_context_number_for_the_request_and_the_budget(wire):
     assert wire.sent[0][1]["options"]["num_ctx"] == models.context_of(config) == 4096
 
 
-def test_ollama_says_loudly_when_its_own_count_shows_the_prompt_was_cut(wire, capsys):
-    wire.reply = {"message": {"content": "ok"}, "prompt_eval_count": 4096}
-    assert Ollama(num_ctx=4096).complete(MESSAGES) == "ok"
-    assert "probably cut" in capsys.readouterr().err
-    wire.reply = {"message": {"content": "ok"}, "prompt_eval_count": 1000}
-    Ollama(num_ctx=4096).complete(MESSAGES)
+# --- Ollama refuses a prompt too long for its window instead of cutting it (Nexus, 20 Nov) -----------------
+
+def test_ollamas_count_near_its_window_means_little_room_for_the_reply_never_a_cut(wire, capsys):
+    """Nexus measured a cut prompt reporting LESS, about half the window, so a count near the window only
+    means the prompt fit and left little room to answer."""
+    wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+    near = [{"role": "user", "content": "x" * 16000}]                # estimated 4,000 tokens
+    wire.reply = {"message": {"content": "ok"}, "prompt_eval_count": 3900}
+    assert Ollama(num_ctx=4096).complete(near) == "ok"
+    err = capsys.readouterr().err
+    assert "almost no room for the reply" in err and "cut" not in err
+    wire.reply = {"message": {"content": "ok"}, "prompt_eval_count": 3800}    # under 95%: nothing to say
+    assert Ollama(num_ctx=4096).complete(near) == "ok"
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("refusal", [TOO_LONG, {"error": "too long", "n_prompt_tokens": 1757, "n_ctx": 256}],
+                         ids=["as Ollama 0.32.1 said it", "the numbers alone"])
+def test_ollamas_400_for_a_prompt_too_long_is_prompt_too_long_in_its_own_numbers(wire, refusal):
+    wire.refusal = (400, refusal)
+    error = outcome(Ollama(num_ctx=256).complete, MESSAGES)
+    assert isinstance(error, PromptTooLong), error
+    assert "1757 tokens by its own count, for its 256-token window" in str(error) and "/end" in str(error)
+
+
+def test_ollamas_error_type_alone_makes_it_prompt_too_long(wire):
+    wire.refusal = (400, {"error": "the prompt is too long", "type": "exceed_context_size_error"})
+    error = outcome(Ollama().complete, MESSAGES)
+    assert isinstance(error, PromptTooLong) and "exceed_context_size_error" in str(error), error
+
+
+@pytest.mark.parametrize("status, body", [(400, {"error": "invalid option: num_ctx"}), (500, TOO_LONG),
+                                          (404, {"error": 'model "llama3.1:8b" not found, try pulling it first'})])
+def test_any_other_refusal_stays_a_plain_model_error(wire, status, body):
+    wire.refusal = (status, body)
+    error = outcome(Ollama().complete, MESSAGES)
+    assert isinstance(error, ModelError) and not isinstance(error, PromptTooLong), error
+    assert f"HTTP {status}" in str(error)
+
+
+def test_ollamas_refusal_mid_chat_keeps_nothing_and_says_why(wire, tmp_path):
+    config = Config(db=str(tmp_path / "agent.db"), backend="ollama", context_tokens=4000)
+    agent = Agent(Store(config.db, Clock()), models.make_model(config), HashEmbedder(), config)
+    wire.refusal = (400, {**TOO_LONG, "n_prompt_tokens": 4100, "n_ctx": 4000})
+    error = outcome(agent.handle, "hello")
+    assert isinstance(error, PromptTooLong) and "4100 tokens by its own count" in str(error), error
+    assert agent.store.turns(1) == []                                  # your message wasn't kept: send it again
+
+
+@pytest.mark.parametrize("facts, said", [
+    ({"version": "0.32.1"}, None), ({"version": "0.40.0"}, None),     # the version tested, or newer: silent
+    ({"version": "0.31.9"}, "this Ollama is 0.31.9, older than 0.32.1"),
+    ({"version": "0.5.7-rc1"}, "this Ollama is 0.5.7-rc1, older than 0.32.1"),
+    (None, "couldn't read this Ollama's version"),                     # no /api/version: HTTP 404
+    ({"version": 7}, "couldn't read this Ollama's version")])
+def test_an_ollama_older_than_the_one_tested_is_named_once_per_run(wire, capsys, facts, said):
+    if facts is not None:
+        wire.facts[OLLAMA_VERSION] = facts
+    wire.reply = {"message": {"content": "ok"}}
+    ollama = Ollama()
+    assert ollama.complete(MESSAGES) == ollama.complete(MESSAGES) == "ok"
+    assert [url for url, _ in wire.asked] == [OLLAMA_VERSION]          # asked once in this run
+    err = capsys.readouterr().err
+    if said is None:
+        assert err == ""
+    else:
+        assert said in err and err.count("0.32.1") == 1               # said once
+        assert 'may ignore "truncate": false and cut a prompt too long' in err
 
 
 def test_openai_compatible_request_and_reply(wire, monkeypatch):
@@ -69,8 +159,8 @@ def test_openai_compatible_request_and_reply(wire, monkeypatch):
     wire.reply = {"choices": [{"message": {"content": "hello"}}]}
     assert OpenAICompatible("m", "http://localhost:8000/v1/", "KINDLING_TEST_KEY").complete(MESSAGES) == "hello"
     ((url, body, headers),) = wire.sent
-    assert (url, body, headers) == ("http://localhost:8000/v1/chat/completions", {"model": "m", "messages": MESSAGES},
-                                    {"Authorization": "Bearer test-key-not-real"})
+    assert (url, body) == ("http://localhost:8000/v1/chat/completions", {"model": "m", "messages": MESSAGES})
+    assert headers.get("authorization") == "Bearer test-key-not-real"
 
 
 def test_anthropic_request_reply_and_refusal(wire, monkeypatch):
@@ -137,7 +227,7 @@ def test_a_local_address_ignores_a_proxy_in_the_environment(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, *a, **k: [
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1" if host == "localhost" else host, port))])
-    assert isinstance(outcome(models.post_json, "http://localhost:11434/api/chat", {}), OSError)
+    assert isinstance(outcome(models.fetch_json, "http://localhost:11434/api/chat", {}), OSError)
     assert tried == ["127.0.0.1"]                                   # straight to this computer, not the proxy
 
 
@@ -161,20 +251,14 @@ def test_an_http_error_shows_what_the_server_said(monkeypatch):
         raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {},
                                      BytesIO(b'{"error": "model \\"llama3.1:8b\\" not found, try pulling it first"}'))
     monkeypatch.setattr("urllib.request.OpenerDirector.open", refuse)
-    error = outcome(models.post_json, "http://localhost:11434/api/chat", {})
+    error = outcome(models.fetch_json, "http://localhost:11434/api/chat", {})
     assert isinstance(error, ModelError) and "404" in str(error) and "try pulling it first" in str(error)
 
 
 def test_a_reply_that_is_not_json_is_a_model_error(monkeypatch):
-    class Page(BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
     monkeypatch.setattr("urllib.request.OpenerDirector.open",
-                        lambda opener, request, timeout=None: Page(b"<html>Sign in to the campus Wi-Fi</html>"))
-    error = outcome(models.post_json, "http://localhost:11434/api/chat", {})
+                        lambda opener, request, timeout=None: Answer(b"<html>Sign in to the campus Wi-Fi</html>"))
+    error = outcome(models.fetch_json, "http://localhost:11434/api/chat", {})
     assert isinstance(error, ModelError) and "campus Wi-Fi" in str(error)
 
 

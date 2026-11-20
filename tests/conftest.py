@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from starter_agent import curiosity as curiosity_module
+from starter_agent import models
 from starter_agent.agent import Agent
 from starter_agent.cli import main
 from starter_agent.config import Config
@@ -60,6 +61,13 @@ def no_network(monkeypatch):
         raise AssertionError("a test tried to reach a model over the network")
     monkeypatch.setattr(socket.socket, "connect", refuse)
     monkeypatch.setattr(socket, "getaddrinfo", refuse)
+
+
+@pytest.fixture(autouse=True)
+def fresh_process(monkeypatch):
+    """Each test starts as a new run of Kindling would: no server asked anything yet, no note printed yet."""
+    monkeypatch.setattr(models, "ASKED", {})
+    monkeypatch.setattr(models, "TOLD", set())
 
 
 @pytest.fixture(autouse=True)

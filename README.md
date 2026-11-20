@@ -85,7 +85,8 @@ Run every command from inside this folder.
      {"backend": "ollama", "model": "llama3.1:8b"}
      ```
      On a laptop without a GPU a reply can take 20 to 60 seconds. Ollama is asked for a 12,288-token
-     window; on a small graphics card, lower it with `"context_tokens"` (see Settings).
+     window, and to refuse a prompt too long for it rather than cut it (tested with Ollama 0.32.1); on a
+     small graphics card, lower the window with `"context_tokens"` (see Settings).
    - **Your own API key.** Put the key in an environment variable, never in `agent.json`:
      `agent.json` holds only the variable's *name*.
      ```json
@@ -243,7 +244,11 @@ token for each digit or non-ASCII character (Nexus measured it on 20 November 20
 Spanish, mixed languages, JSON, numbers and Japanese it erred high, but it is no bound on text built to
 defeat it). Before anything is
 sent, the whole prompt is checked against the context with a quarter to spare; one too long is refused with a message, never cut in
-silence, and Ollama's own count is checked after each reply. A session is never cut in half, so a session
+silence. Ollama is also asked to refuse one itself (`"truncate": false`), and its refusal comes back as
+the same message, with Ollama's own count. That was tested on Ollama 0.32.1: an older Ollama may ignore
+it and cut a long prompt without saying so, and Kindling tells you when the Ollama it talks to is older.
+After a reply, Ollama's count warns you only that the prompt left almost no room for the reply. It can't
+show a cut: Nexus found that a prompt Ollama cut counts *less* (about half the window), not more. A session is never cut in half, so a session
 bigger than the budget is never recalled, and a 30-turn day with real replies can be that big. `chat` and
 `recall` name such a session when it would have been recalled. End long days with `/end`, or raise both settings if your
 model has room.

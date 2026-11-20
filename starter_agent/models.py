@@ -22,10 +22,12 @@ import urllib.request
 
 class ModelError(Exception):
     """The model's server answered with something the agent can't use, or the prompt can't be sent."""
+    status, said = None, ""          # for an HTTP error: its status, and everything the server said
 
 
 class PromptTooLong(ModelError):
-    """The prompt won't fit the model's context with a quarter to spare, so it wasn't sent."""
+    """The prompt is too long for the model's context: refused before it was sent (it must fit with a
+    quarter to spare), or refused by the server itself. Never cut."""
 
 
 class FakeModel:
@@ -108,18 +110,21 @@ def is_local(url):
         return False
 
 
-def post_json(url, body, headers=None, timeout=600):
-    """POST `body` as JSON; return the reply's JSON. A local address never goes through a proxy set in
-    your environment (http_proxy), so a local model stays on your machine."""
-    request = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+def fetch_json(url, body=None, headers=None, timeout=600):
+    """POST `body` as JSON (with no body, GET); return the reply's JSON. A local address never goes through
+    a proxy set in your environment (http_proxy), so a local model stays on your machine."""
+    request = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
+                                     method="GET" if body is None else "POST",
                                      headers={"Content-Type": "application/json", **(headers or {})})
     opener = urllib.request.build_opener(*([urllib.request.ProxyHandler({})] if is_local(url) else []))
     try:
         with opener.open(request, timeout=timeout) as response:
             raw = response.read()
     except urllib.error.HTTPError as error:              # reached, but it said no: show what it said
-        raise ModelError(f"The model server answered HTTP {error.code}: "
-                         f"{error.read().decode('utf-8', 'replace')[:300]}") from None
+        said = error.read().decode("utf-8", "replace")
+        failed = ModelError(f"The model server answered HTTP {error.code}: {said[:300]}")
+        failed.status, failed.said = error.code, said
+        raise failed from None
     except http.client.HTTPException as error:          # e.g. the reply was cut off part way
         raise ModelError(f"The model server's reply broke off: {error!r}") from None
     try:
@@ -127,6 +132,28 @@ def post_json(url, body, headers=None, timeout=600):
     except ValueError:
         start = raw[:200].decode("utf-8", "replace")
         raise ModelError(f"The model server's reply wasn't JSON: {start!r}") from None
+
+
+ASKED = {}       # what each server said about itself, asked once per process: {address: its JSON, or None}
+TOLD = set()     # the notes already printed in this process
+
+
+def ask_once(url, headers=None):
+    """GET what a server says about itself (its version, its window), once per process. A server that
+    can't say, for any reason, gives None: what it says is optional, never a reason to stop."""
+    if url not in ASKED:
+        try:
+            ASKED[url] = fetch_json(url, None, headers, timeout=30)
+        except (ModelError, OSError, ValueError):
+            ASKED[url] = None
+    return ASKED[url]
+
+
+def note_once(text):
+    """A note for you on stderr, printed once per process."""
+    if text not in TOLD:
+        TOLD.add(text)
+        print(text, file=sys.stderr)
 
 
 def text_of(reply):
@@ -156,6 +183,23 @@ def key_for(name, usual, base_url):
     return key
 
 
+OLLAMA_TESTED = (0, 32, 1)       # the Ollama that "truncate": false was tested on (Nexus, 20 Nov 2026)
+
+
+def ollama_refusal(error):
+    """Ollama's refusal of a prompt longer than its window (HTTP 400, because Kindling sends "truncate":
+    false), as PromptTooLong quoting Ollama's own count. None for any other error."""
+    said = parse_json(error.said)
+    said = said if isinstance(said, dict) else {}
+    counted = {"n_prompt_tokens", "n_ctx"} <= said.keys()
+    if error.status != 400 or not (counted or "exceed_context_size_error" in error.said):
+        return None
+    what = (f"{said['n_prompt_tokens']} tokens by its own count, for its {said['n_ctx']}-token window" if counted
+            else error.said[:300])
+    return PromptTooLong(f"Ollama refused the prompt as too long: {what}. Nothing was cut or answered. End this "
+                         'session (/end, or `session end`), or raise "context_tokens" in agent.json')
+
+
 class Ollama:
     def __init__(self, model="", base_url="", num_ctx=CONTEXT["ollama"]):
         self.model = model or "llama3.1:8b"
@@ -163,15 +207,35 @@ class Ollama:
         self.num_ctx = num_ctx    # Ollama's own default window is smaller than an 8,000-token recall pack
 
     def complete(self, messages):
-        out = post_json(f"{self.base_url}/api/chat", {
-            "model": self.model, "messages": messages, "stream": False,
-            "options": {"num_ctx": self.num_ctx}})
+        self.check_version()
+        try:
+            out = fetch_json(f"{self.base_url}/api/chat", {
+                "model": self.model, "messages": messages, "stream": False,
+                "truncate": False,              # too long for the window: refused (HTTP 400), never cut
+                "options": {"num_ctx": self.num_ctx}})
+        except ModelError as error:
+            raise ollama_refusal(error) or error
         used = out.get("prompt_eval_count") if isinstance(out, dict) else None
-        if isinstance(used, int) and used >= self.num_ctx * 0.95:     # the model's own count: probably cut
-            print(f"WARNING: Ollama read {used:,} prompt tokens, at its {self.num_ctx:,}-token window: the "
-                  "prompt was probably cut, and the model never saw what was cut. End this session, or raise "
+        if isinstance(used, int) and used >= self.num_ctx * 0.95:   # it fit, leaving little room to answer
+            print(f"WARNING: Ollama counted {used:,} prompt tokens in its {self.num_ctx:,}-token window: the "
+                  "prompt left almost no room for the reply, which may stop short. End this session, or raise "
                   '"context_tokens" in agent.json.', file=sys.stderr)
         return reply_at(out, "message", "content")
+
+    def check_version(self):
+        """Once per process: say plainly if this Ollama is older than the one "truncate": false was tested on
+        (0.32.1), or won't say which it is. An older one may ignore the field and cut a long prompt."""
+        said = ask_once(f"{self.base_url}/api/version")
+        version = said.get("version") if isinstance(said, dict) else None
+        parts = tuple(int(n) for n in re.findall(r"\d+", version)[:3]) if isinstance(version, str) else ()
+        if not parts:
+            note_once("Note: Kindling couldn't read this Ollama's version (it was tested with 0.32.1). An older "
+                      'Ollama may ignore "truncate": false and cut a prompt too long for its window without '
+                      "saying so; Kindling's own length check still runs first.")
+        elif parts < OLLAMA_TESTED:
+            note_once(f"WARNING: this Ollama is {version}, older than 0.32.1, the version Kindling was tested "
+                      'with. It may ignore "truncate": false and cut a prompt too long for its window without '
+                      "saying so; Kindling's own length check still runs first.")
 
 
 class OpenAICompatible:
@@ -187,7 +251,7 @@ class OpenAICompatible:
 
     def complete(self, messages):
         headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
-        out = post_json(f"{self.base_url}/chat/completions",
+        out = fetch_json(f"{self.base_url}/chat/completions",
                         {"model": self.model, "messages": messages}, headers)
         return reply_at(out, "choices", 0, "message", "content")
 
@@ -204,7 +268,7 @@ class Anthropic:
     def complete(self, messages):
         system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
         rest = [m for m in messages if m["role"] != "system"]
-        out = post_json(f"{self.base_url}/v1/messages",
+        out = fetch_json(f"{self.base_url}/v1/messages",
                         # max_tokens is required. A reply here is ~300 tokens (plan section 7), but
                         # current Claude models think first and thinking counts against it; ~16,000 is
                         # the usual ceiling for a request that isn't streamed.

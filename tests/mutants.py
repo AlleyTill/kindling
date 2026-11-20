@@ -317,7 +317,7 @@ MUTANTS = [
         "if size * 5 // 4 > context:", "if size > context:")]),
     ("one context number for Ollama's request and the budget", "starter_agent/models.py", [(
         "Ollama(config.model, config.base_url, context_of(config))", "Ollama(config.model, config.base_url)")]),
-    ("Ollama's own count of a cut prompt is reported", "starter_agent/models.py", [(
+    ("Ollama's count near its window warns that little room was left", "starter_agent/models.py", [(
         "used >= self.num_ctx * 0.95", "used > self.num_ctx * 2")]),
     ("a session too big for the budget is named", "starter_agent/recall.py", [(
         "[s for s in too_big if s[1] > lowest]", "[]")]),
@@ -331,7 +331,7 @@ MUTANTS = [
     ("a local address ignores a proxy in the environment", "starter_agent/models.py", [(
         "*([urllib.request.ProxyHandler({})] if is_local(url) else [])", "*[]")]),
     ("an HTTP error shows what the server said", "starter_agent/models.py", [(
-        "f\"{error.read().decode('utf-8', 'replace')[:300]}\"", '""')]),
+        "{error.code}: {said[:300]}\")", "{error.code}: \")")]),
     ("a reply that isn't JSON is a model error", "starter_agent/models.py", [(
         "    except ValueError:\n        start = raw", "    except KeyError:\n        start = raw")]),
     ("a reply of the wrong shape is a model error", "starter_agent/models.py", [(
@@ -416,6 +416,25 @@ MUTANTS = [
     ("the estimate counts a digit or a non-ASCII character as a whole token", "starter_agent/models.py", [(
         "    return (len(text) - digits - wide - punct + 3) // 4 + digits + wide + (punct + 1) // 2",
         "    return (len(text) + 3) // 4")]),
+    ("Ollama is asked to refuse a prompt too long, not cut it", "starter_agent/models.py", [(
+        '                "truncate": False,              # too long for the window: refused (HTTP 400), never cut\n',
+        "")]),
+    ("Ollama's 400 for a prompt too long is PromptTooLong", "starter_agent/models.py", [(
+        "            raise ollama_refusal(error) or error", "            raise error")]),
+    ("that PromptTooLong quotes Ollama's own count", "starter_agent/models.py", [(
+        """f"{said['n_prompt_tokens']} tokens by its own count, for its {said['n_ctx']}-token window" if counted""",
+        '"a prompt too long" if counted')]),
+    ("only a 400 is read as Ollama's refusal", "starter_agent/models.py", [(
+        "if error.status != 400 or not (", "if not (")]),
+    ("Ollama's error type alone is enough", "starter_agent/models.py", [(
+        'not (counted or "exceed_context_size_error" in error.said)', "not counted")]),
+    ("a server is asked about itself once per run", "starter_agent/models.py", [(
+        "    if url not in ASKED:", "    if True:")]),
+    ("a note is printed once per run", "starter_agent/models.py", [("    if text not in TOLD:", "    if True:")]),
+    ("an Ollama older than 0.32.1 is named", "starter_agent/models.py", [(
+        "        elif parts < OLLAMA_TESTED:", "        elif False:")]),
+    ("an Ollama whose version can't be read is named", "starter_agent/models.py", [(
+        "        if not parts:\n", "        if False:\n")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),
