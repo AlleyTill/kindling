@@ -268,14 +268,14 @@ class Ollama:
         said = ask_once(f"{self.base_url}/api/version")
         version = said.get("version") if isinstance(said, dict) else None
         parts = tuple(int(n) for n in re.findall(r"\d+", version)[:3]) if isinstance(version, str) else ()
+        risk = ('may ignore "truncate": false and cut a prompt too long for its window without saying so; '
+                "Kindling's own length check still runs first.")
         if not parts:
-            note_once("Note: Kindling couldn't read this Ollama's version (it was tested with 0.32.1). An older "
-                      'Ollama may ignore "truncate": false and cut a prompt too long for its window without '
-                      "saying so; Kindling's own length check still runs first.")
+            note_once(f"Note: Kindling couldn't read this Ollama's version (it was tested with 0.32.1). An older "
+                      f"Ollama {risk}")
         elif parts < OLLAMA_TESTED:
             note_once(f"WARNING: this Ollama is {version}, older than 0.32.1, the version Kindling was tested "
-                      'with. It may ignore "truncate": false and cut a prompt too long for its window without '
-                      "saying so; Kindling's own length check still runs first.")
+                      f"with. It {risk}")
 
 
 class OpenAICompatible:

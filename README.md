@@ -18,7 +18,7 @@ The licence's AI-welfare terms are written for persistent agents. As shipped, Ki
 delete` is you removing your own data. If you grow it into a long-running agent, read those terms first: they're
 part of what you're building toward.
 
-It's deliberately small (about 1,700 lines of Python, standard library only) so you can read all of it in
+It's deliberately small (about 1,900 lines of Python, standard library only) so you can read all of it in
 an afternoon and change any of it.
 
 ## The loop
@@ -236,26 +236,28 @@ A mistake in `agent.json` (a missing comma, `"8000"` in quotes where a number go
 stops the agent with a message that names the setting.
 
 **The context window, and long sessions.** Each turn's recall budget is the smaller of
-`recall_budget_tokens` and what the model's context leaves: its window (see `context_tokens`), minus the rest of the prompt
-(this session, the beliefs, the instructions), minus room for the answer (a quarter of the context, at least
-1,024 tokens). With under about 1,000 tokens left, recall is skipped and you're told. Tokens are estimated
-without a tokenizer: four characters a token for words, half a token for each punctuation mark, and a whole
-token for each digit or non-ASCII character (Nexus measured it on 20 November 2026: on prose, code,
-Spanish, mixed languages, JSON, numbers and Japanese it erred high, but it is no bound on text built to
-defeat it). Before anything is
-sent, the whole prompt is checked against the context with a quarter to spare; one too long is refused with a message, never cut in
-silence. Ollama is also asked to refuse one itself (`"truncate": false`), and its refusal comes back as
-the same message, with Ollama's own count. That was tested on Ollama 0.32.1: an older Ollama may ignore
-it and cut a long prompt without saying so, and Kindling tells you when the Ollama it talks to is older.
-After a reply, Ollama's count warns you only that the prompt left almost no room for the reply. It can't
-show a cut: Nexus found that a prompt Ollama cut counts *less* (about half the window), not more. After
-each reply, the server's own count of the prompt (Ollama, OpenAI-compatible and Anthropic replies carry one)
-is compared with the estimate, and a miss of over a quarter is printed, so you can see how the estimate
-does on your text; it is never taken as a sign of a cut. A session is never cut in half, so a session
-bigger than the budget is never recalled, and a 30-turn day with real replies can be that big. **`chat` and
-`recall` name a session when its size, not its rank, kept it out: it didn't fit what was left of the budget
-while a session ranked below it did, or nothing fit at all.** End long days with `/end`, or raise both
-settings if your model has room.
+`recall_budget_tokens` and what the model's context leaves: its window (see `context_tokens`), minus the
+rest of the prompt (this session, the beliefs, the instructions), minus room for the answer (a quarter of
+the context, at least 1,024 tokens). With under about 1,000 tokens left, recall is skipped and you're told.
+Tokens are estimated without a tokenizer: four characters a token for words, half a token for each
+punctuation mark, and a whole token for each digit or non-ASCII character. Nexus measured it on 20 November
+2026: on prose, code, Spanish, mixed languages, JSON, numbers and Japanese it erred high, but it is no bound
+on text built to defeat it.
+
+Before anything is sent, the whole prompt is checked against the context with a quarter to spare; one too
+long is refused with a message, never cut in silence. Ollama is also asked to refuse one itself
+(`"truncate": false`), and its refusal comes back as the same message, with Ollama's own count. That was
+tested on Ollama 0.32.1: an older Ollama may ignore it and cut a long prompt without saying so, and Kindling
+tells you when the Ollama it talks to is older. After a reply, Ollama's count warns you only that the prompt
+left almost no room for the reply. It can't show a cut: Nexus found that a prompt Ollama cut counts *less*
+(about half the window), not more. And after each reply, the server's own count of the prompt (Ollama,
+OpenAI-compatible and Anthropic replies carry one) is compared with the estimate: a miss of over a quarter is
+printed, so you can see how the estimate does on your text, and it is never taken as a sign of a cut.
+
+A session is never cut in half, so a session bigger than the budget is never recalled, and a 30-turn day
+with real replies can be that big. **`chat` and `recall` name a session when its size, not its rank, kept it
+out: it didn't fit what was left of the budget while a session ranked below it did, or nothing fit at all.**
+End long days with `/end`, or raise both settings if your model has room.
 
 ## Reading the code
 
