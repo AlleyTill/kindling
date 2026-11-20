@@ -156,3 +156,122 @@ def test_recall_6b_another_retriever_can_be_swapped_in(tmp_path):
     agent.handle("hello")
     assert own.asked == ("hello", 8000)                         # the agent asked the retriever it was given
     assert "[turn 70] user: from my own retriever" in agent.model.calls[-1][-1]["content"]
+
+
+# --- Round 3: Nexus's two offered tests (19 Nov, 05:25), the first verbatim ---------------------------------
+
+def test_best_two_not_worst_two(make_agent):
+    store = make_agent().store
+    x, _ = add_session(store, [("user", f"x{i}") for i in range(1, 6)])
+    y, _ = add_session(store, [("user", "y1"), ("user", "y2")])
+    embedder = StubEmbedder({"x1": .99, "x2": .98, "x3": .50, "x4": .49, "x5": .48, "y1": .90, "y2": .89})
+    assert [sid for sid, _ in rank_sessions(store, embedder, "nothing in common")] == [x, y]
+
+
+def test_changed_embedder_same_name_is_embedded_again(make_agent):   # Nexus's trap test, inverted after the fix
+    store = make_agent().store
+    add_session(store, [("user", "tidal pools at low tide")])
+    ensure_vectors(store, HashEmbedder())
+
+    class Tweaked(HashEmbedder):
+        def _one(self, text):
+            return list(reversed(super()._one(text)))
+    tweaked = Tweaked()
+    assert tweaked.name == "hash-256"
+    stored = store.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
+    ensure_vectors(store, tweaked)
+    assert store.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 2 * stored      # was: == stored
+
+
+# --- Round 3: scores from one embedder only, and named after it (the r2 verifier's W11 and W12) ------------
+
+def test_recall_7_scores_never_mix_two_embedders(make_agent):
+    store, fresh = make_agent().store, make_agent(db=":memory:").store
+    for s in (store, fresh):
+        add_session(s, [("user", "alpha"), ("user", "charlie")])
+        add_session(s, [("user", "bravo")])
+    points = PointEmbedder({"query": [1.0, 0.0, 0.0], "alpha": [0.9, 0.1, 0.0], "bravo": [0.5, 0.5, 0.0]})
+    ensure_vectors(store, StubEmbedder({"alpha": 0.1, "bravo": 0.99}))      # another embedder was used before
+    assert rank_sessions(store, points, "query") == rank_sessions(fresh, points, "query")
+
+
+def test_recall_7b_memory_names_the_embedder_it_used(make_agent):
+    store = make_agent().store
+    add_session(store, [("user", "alpha")])
+    assert Memory(store, StubEmbedder({})).recall("alpha", 1000).scored_by == "RRF of BM25 and the stub embedder"
+
+
+# --- Round 3: a session too big for the budget is named, never skipped in silence (army, r3) ---------------
+
+def test_recall_8_a_session_too_big_for_the_budget_is_named_and_packing_goes_on(make_agent):
+    store = make_agent().store
+    big, _ = add_session(store, [("user", "my cat is called Biscuit. " * 100)])      # the best match, ~650 tokens
+    small, _ = add_session(store, [("user", "notes on my cat")])
+    got = Memory(store, HashEmbedder()).recall("what is my cat called", 400)
+    assert [sid for sid, _ in got.sessions] == [small]
+    cost = estimate_tokens(render_session(store, big) + "\n\n")
+    assert [(sid, tokens) for sid, _, tokens in got.skipped] == [(big, cost)] and cost > 400
+    assert recall(store, HashEmbedder(), "what is my cat called", budget=400)[1] == [small]
+
+
+def test_recall_8b_chat_and_the_recall_command_both_say_so(make_agent, cli, capsys, tmp_path):
+    agent = make_agent(fn=lambda messages: "ok", recall_budget_tokens=400, db=str(tmp_path / "chat.db"))
+    add_session(agent.store, [("user", "my cat is called Biscuit. " * 100)])
+    agent.handle("what is my cat called?")
+    assert any(note.startswith("recall skipped session 1") and "over this turn's 400-token budget" in note
+               for note in agent.notes)
+    (tmp_path / "agent.json").write_text('{"recall_budget_tokens": 400}')
+    cli("chat", "my cat is called Biscuit. " * 100)
+    cli("session", "end")
+    capsys.readouterr()
+    assert cli("recall", "cat", "Biscuit") == 0
+    assert "session 1  score" in (out := capsys.readouterr().out) and "skipped: ~" in out and "Nothing recalled" in out
+
+
+# --- Round 3: recall's budget is sized from the model's context (Nexus, 19 Nov, 02:33) ---------------------
+
+class Asked:
+    """A retriever that records the budget it was given."""
+    budget = None
+
+    def recall(self, query, budget_tokens):
+        self.budget = budget_tokens
+        return Recalled("", [], "by hand")
+
+
+@pytest.mark.parametrize("context, prompt, cap, budget", [
+    (8000, 2000, 8000, 4000),          # 8,000 - 2,000 - a quarter of 8,000 for the answer
+    (100000, 100, 8000, 8000),         # never more than the cap
+    (100000, 100, 500, 500),           # the cap is yours to set
+    (3000, 100, 8000, 1876),           # the answer's room is at least 1,024 tokens
+    (8000, 5100, 8000, None),          # under 1,000 tokens of room: recall is skipped, and says so
+])
+def test_recall_9_the_budget_is_what_the_context_leaves(tmp_path, context, prompt, cap, budget):
+    config = Config(db=str(tmp_path / "agent.db"), context_tokens=context, recall_budget_tokens=cap)
+    asked = Asked()
+    agent = Agent(Store(config.db, Clock()), FakeModel(), HashEmbedder(), config, memory=asked)
+    pack = agent.recall("q", [{"role": "user", "content": "x" * (4 * prompt)}])
+    assert asked.budget == budget
+    if budget is None:
+        assert pack.sessions == [] and "recall was skipped" in pack.text and "recall skipped" in agent.notes[0]
+
+
+def test_recall_10_a_prompt_too_long_for_a_tiny_context_is_refused_not_cut(make_agent):
+    """Nexus's tiny num_ctx fixture: the session alone outgrows a 1,000-token context."""
+    from starter_agent.models import ModelError
+    agent = make_agent(fn=lambda messages: "ok", context_tokens=1000)
+    agent.handle("short")
+    with pytest.raises(ModelError, match="too long"):
+        agent.handle("a long paste " * 300)
+    assert len(agent.model.calls) == 1                                    # never sent
+    assert [t["text"] for t in agent.store.turns(1)] == ["short", "ok"]   # and not kept
+
+
+def test_recall_10b_as_the_session_grows_the_best_session_that_fits_is_kept_not_the_newest(make_agent):
+    agent = make_agent(fn=lambda messages: "ok", context_tokens=4000)
+    add_session(agent.store, [("user", "the warblers migrate in April " * 107)])        # relevant, ~800 tokens
+    for topic in ("sourdough", "bicycles"):
+        add_session(agent.store, [("user", f"notes about {topic} " * 145)])            # newer, ~800 tokens each
+    agent.handle("when do the warblers migrate? " + "padding " * 600)                  # room for one session
+    recalled = agent.model.calls[-1][-1]["content"].split("YOUR CURRENT BELIEFS")[0]
+    assert recalled.count("=== Session ") == 1 and "=== Session 1," in recalled
