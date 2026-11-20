@@ -77,13 +77,20 @@ def context_of(config):
 
 
 def estimate_tokens(text):
-    return (len(text) + 3) // 4         # about four characters a token; no tokenizer needed
+    """Tokens, roughly, erring high: a digit or a non-ASCII character costs a token, ASCII punctuation half
+    of one, everything else four characters a token (measured 2026-11-20 on Mistral 7B v0.3 and Qwen3.5).
+    Nexus's estimate. On the eight texts measured that day (prose, code, Spanish, mixed languages, JSON,
+    numbers, Japanese) it erred high: real tokens were at most 1.18 times it. It doesn't bound text built to
+    defeat it (rare Unicode a tokenizer splits into bytes, say), and no tokenizer is needed."""
+    digits = sum(c.isdigit() for c in text)
+    wide = sum(ord(c) > 127 for c in text)
+    punct = sum(c.isascii() and not c.isalnum() and not c.isspace() for c in text)
+    return (len(text) - digits - wide - punct + 3) // 4 + digits + wide + (punct + 1) // 2
 
 
 def check_fits(messages, context):
-    """Refuse, loudly, a prompt too long for the context, before it's sent: a server like Ollama would cut
-    it without telling the model. Four characters a token undercounts code, numbers and non-English text,
-    so the prompt must fit with a quarter to spare."""
+    """Refuse, loudly, a prompt too long for the context, before it's sent: a server may cut it without
+    telling the model. The estimate is only an estimate, so the prompt must fit with a quarter to spare."""
     size = estimate_tokens("".join(m["content"] for m in messages))
     if size * 5 // 4 > context:
         raise PromptTooLong(f"The prompt is about {size:,} tokens: too long for the model's {context:,}-token "

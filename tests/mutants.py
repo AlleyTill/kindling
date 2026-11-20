@@ -223,7 +223,7 @@ MUTANTS = [
     ("the agent recalls through whatever memory it was given", "starter_agent/agent.py", [(
         "self.memory = memory or Memory(store, embedder)", "self.memory = Memory(store, embedder)")]),
     ("each part runs alone on its own fixture", "starter_agent/fixtures.py", [(
-        "def recall_alone(budget_tokens=60):", "def recall_alone(budget_tokens=10**6):")]),
+        "def recall_alone(budget_tokens=100):", "def recall_alone(budget_tokens=10**6):")]),
     ("a memory folder created here is private (700)", "starter_agent/store.py", [(
         '        os.makedirs(folder, mode=0o700)\n        if os.name == "posix":\n            os.chmod(folder, 0o700)\n',
         "        os.makedirs(folder)\n")]),
@@ -412,6 +412,10 @@ MUTANTS = [
     ("a db under ~ is expanded", "starter_agent/config.py", [(
         'db = os.path.expanduser(values.get("db", Config.db))', 'db = values.get("db", Config.db)')]),
     ("an empty db is refused", "starter_agent/config.py", [("    if not db.strip():", "    if False:")]),
+    # --- Round 4: Nexus's measurements (20 Nov) -----------------------------------------------------------
+    ("the estimate counts a digit or a non-ASCII character as a whole token", "starter_agent/models.py", [(
+        "    return (len(text) - digits - wide - punct + 3) // 4 + digits + wide + (punct + 1) // 2",
+        "    return (len(text) + 3) // 4")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

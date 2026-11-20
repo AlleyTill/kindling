@@ -11,7 +11,8 @@ import pytest
 
 from starter_agent import models
 from starter_agent.config import Config
-from starter_agent.models import Anthropic, ModelError, Ollama, OpenAICompatible, check_fits, split_json
+from starter_agent.models import (Anthropic, ModelError, Ollama, OpenAICompatible, check_fits, estimate_tokens,
+                                  split_json)
 
 MESSAGES = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}]
 
@@ -184,6 +185,39 @@ def test_a_prompt_too_long_for_the_context_is_refused_not_cut():
     assert check_fits(fits, 1250) is None
     error = outcome(check_fits, fits, 1249)
     assert isinstance(error, ModelError) and "too long" in str(error) and "1,249" in str(error)
+
+
+# --- The token estimate (Nexus, 20 Nov): it errs high where four characters a token undercounted ------------
+# Nexus measured real tokens against the old estimate, (len + 3) // 4, on texts like these (Mistral 7B v0.3 /
+# Qwen3.5-27B): prose 1.14 / 1.04, code 1.20 / 1.03, Spanish 1.16 / 0.88, mixed languages 1.91 / 1.24,
+# JSON 2.08 / 2.08, numbers 4.00 / 4.00, Japanese 4.50 / 1.92. A test can't call a tokenizer, so this pins the
+# estimate's shape instead: never below the old one, and a digit or a non-ASCII character is a whole token.
+
+ESTIMATED = [
+    ("prose", "The mice were weighed every Monday morning, and the heavier ones moved to the second cage."),
+    ("code", "def mean(xs):\n    return sum(xs) / len(xs) if xs else 0.0\n"),
+    ("Spanish", "Los ratones se pesaron cada lunes por la mañana, y los más pesados pasaron a la segunda jaula."),
+    ("mixed languages", "Los ratones, les souris, die Mäuse, マウス, мыши: weighed on Mondays."),
+    ("JSON", '[{"id": 1, "mass_g": 21.4, "cage": "B"}, {"id": 2, "mass_g": 19.8, "cage": "A"}]'),
+    ("numbers", "3.14159 2.71828 1.41421 0.57721 1.61803 4.66920"),
+    ("Japanese", "マウスは毎週月曜日の朝に体重を測定した。"),
+]
+
+
+@pytest.mark.parametrize("kind, text", ESTIMATED, ids=[kind for kind, _ in ESTIMATED])
+def test_the_estimate_is_never_below_four_characters_a_token(kind, text):
+    new, old = estimate_tokens(text), (len(text) + 3) // 4
+    whole = sum(c.isdigit() or ord(c) > 127 for c in text)          # each a token of its own
+    assert new >= old and new >= whole, (kind, new, old, whole)
+    assert estimate_tokens(text + "7") == new + 1                     # one more digit, one more token
+    assert estimate_tokens(text + "語") == new + 1                    # one more non-ASCII character, too
+
+
+def test_digits_and_non_ascii_characters_are_whole_tokens_and_letters_four_a_token():
+    assert estimate_tokens("1234567890" * 10) == 100                  # the old estimate said 25
+    assert estimate_tokens("語" * 100) == estimate_tokens("ж" * 100) == 100
+    assert estimate_tokens("." * 100) == 50                           # ASCII punctuation: half a token
+    assert estimate_tokens("word " * 100) == 125                      # prose: as before
 
 
 # --- Reading the model's JSON block (army red-hat-tester, security-auditor, test-engineer, r3) -------------

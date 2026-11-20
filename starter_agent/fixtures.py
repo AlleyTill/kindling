@@ -50,7 +50,7 @@ RECALL_SESSIONS = [
 RECALL_QUERY = "What is my cat called?"
 
 
-def recall_alone(budget_tokens=60):
+def recall_alone(budget_tokens=100):
     """Recall alone: room for one session, so it has to pick the one about the cat (session 3)."""
     return Memory(fresh_store(RECALL_SESSIONS), HashEmbedder()).recall(RECALL_QUERY, budget_tokens)
 

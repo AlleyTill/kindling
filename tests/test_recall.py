@@ -78,8 +78,8 @@ def test_recall_3b_exact_budget_edge_counts_the_separators(make_agent):
     sids = []
     for text in ("first notes on soil", "second notes on soil"):
         sid, (turn,) = add_session(store, [("user", text)])
-        pad = -len(render_session(store, sid)) % 4                # a whole number of tokens...
-        store.db.execute("UPDATE turns SET text = text || ? WHERE id=?", ("." * pad, turn))
+        while estimate_tokens(render_session(store, sid) + "\n\n") == estimate_tokens(render_session(store, sid)):
+            store.db.execute("UPDATE turns SET text = text || 'a' WHERE id=?", (turn,))   # a letter at a time...
         sids.append(sid)
     blocks = [render_session(store, sid) for sid in sids]
     costs = [estimate_tokens(block + "\n\n") for block in blocks]

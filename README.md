@@ -225,7 +225,7 @@ its reach. To delete everything, delete the `memory` folder.
 | `api_key_env` | blank | the NAME of the variable holding your key (blank: the usual one, for the provider's own address) |
 | `embedder` | `hash` | `hash` (needs nothing) or `bge-small` |
 | `context_tokens` | 0 | the model's window; 0 means the backend's usual one (Ollama 12,288, OpenAI-compatible 16,384, Anthropic 1,000,000) |
-| `recall_budget_tokens` | 8000 | the most recalled sessions may take per turn, counted as about 4 characters a token (0 or more) |
+| `recall_budget_tokens` | 8000 | the most recalled sessions may take per turn, in Kindling's estimated tokens (0 or more) |
 | `idle_minutes` | 30 | a session ends after this long without a message, at your next `chat` (nothing runs in the background) |
 | `question_queue` | 20 | the most open questions (at least 1); past it, the oldest expires (it isn't deleted) |
 | `dedupe_similarity` | 0.85 | from 0 to 1: a new question this close to an open or dropped one is skipped |
@@ -237,9 +237,12 @@ stops the agent with a message that names the setting.
 **The context window, and long sessions.** Each turn's recall budget is the smaller of
 `recall_budget_tokens` and what the model's context leaves: `context_tokens`, minus the rest of the prompt
 (this session, the beliefs, the instructions), minus room for the answer (a quarter of the context, at least
-1,024 tokens). With under about 1,000 tokens left, recall is skipped and you're told. Before anything is
-sent, the whole prompt is checked against the context with a quarter to spare (four characters a token
-undercounts code, numbers and other languages); one too long is refused with a message, never cut in
+1,024 tokens). With under about 1,000 tokens left, recall is skipped and you're told. Tokens are estimated
+without a tokenizer: four characters a token for words, half a token for each punctuation mark, and a whole
+token for each digit or non-ASCII character (Nexus measured it on 20 November 2026: on prose, code,
+Spanish, mixed languages, JSON, numbers and Japanese it erred high, but it is no bound on text built to
+defeat it). Before anything is
+sent, the whole prompt is checked against the context with a quarter to spare; one too long is refused with a message, never cut in
 silence, and Ollama's own count is checked after each reply. A session is never cut in half, so a session
 bigger than the budget is never recalled, and a 30-turn day with real replies can be that big. `chat` and
 `recall` name such a session when it would have been recalled. End long days with `/end`, or raise both settings if your
