@@ -18,7 +18,7 @@ The licence's AI-welfare terms are written for persistent agents. As shipped, Ki
 delete` is you removing your own data. If you grow it into a long-running agent, read those terms first: they're
 part of what you're building toward.
 
-It's deliberately small (about 1,400 lines of Python, standard library only) so you can read all of it in
+It's deliberately small (about 1,700 lines of Python, standard library only) so you can read all of it in
 an afternoon and change any of it.
 
 ## The loop
@@ -58,6 +58,7 @@ Run every command from inside this folder.
    python -m pip install pytest
    python -m pytest
    ```
+   On Windows, two tests that check Linux and macOS file modes and time zones are skipped.
 3. **Try it with the fake model first.** It needs no key and downloads nothing. The "model" is three rules
    (in `models.py`, `demo_brain`): a message starting `remember:` becomes a belief; a message ending in `?`
    gets "I'm not sure about that yet", which curiosity notices when the session ends.
@@ -83,7 +84,8 @@ Run every command from inside this folder.
      ```json
      {"backend": "ollama", "model": "llama3.1:8b"}
      ```
-     On a laptop without a GPU a reply can take 20 to 60 seconds.
+     On a laptop without a GPU a reply can take 20 to 60 seconds. Ollama is asked for a 12,288-token
+     window; on a small graphics card, lower it with `"context_tokens"` (see Settings).
    - **Your own API key.** Put the key in an environment variable, never in `agent.json`:
      `agent.json` holds only the variable's *name*.
      ```json
@@ -93,11 +95,15 @@ Run every command from inside this folder.
      Anthropic to retry a message on a recommended model if a safety check declines it
      (`"fallbacks"` in `models.py`; delete it there if your setup doesn't accept it).
      ```json
-     {"backend": "openai", "model": "THE-MODEL-NAME", "api_key_env": "OPENAI_API_KEY"}
+     {"backend": "openai", "model": "THE-MODEL-NAME"}
      ```
-     works with any server that speaks the OpenAI chat API (set `"base_url"` for vLLM, llama.cpp or LM Studio).
+     sends to OpenAI with the key in `OPENAI_API_KEY`. For a local server that speaks the OpenAI chat API
+     (vLLM, llama.cpp, LM Studio), set `"base_url"`; it needs no key. The usual variable is read only for the
+     provider's own address: a key for any other server must be named in `"api_key_env"`, and no key is
+     ever sent over plain `http://` except to this computer.
 
-   If the model can't be reached, your message isn't kept, so just send it again.
+   If the model can't be reached, its reply can't be used, or you press Ctrl-C while it answers, your
+   message isn't kept, so just send it again.
 5. **Optional: better recall.** The default embedder, `hash`, matches shared words and spellings, not
    meaning, so its scores don't measure the memory design; the agent says so when it starts. For meaning,
    `python -m pip install sentence-transformers` and add `"embedder": "bge-small"` to `agent.json`; the
@@ -115,27 +121,39 @@ Run every command from inside this folder.
 | `session delete ID` | delete a session and what was written in it (asks first; `--yes` skips) |
 | `desire add "TEXT" [--rank N]` | something you want the agent to work toward; rank 1 is the top |
 | `desire list` / `desire rank ID N` / `desire drop ID` | your live desires; change a rank; stop one |
-| `intentions` | what the agent is working on: each serves a live desire, and one is current |
+| `intentions` / `intentions reopen ID` | what the agent is working on; make a done one active again |
 | `beliefs` / `beliefs history ID` | current beliefs; every version of one, with its evidence |
+| `beliefs ok ID` / `beliefs drop ID` | a flagged belief stands; or stop using a belief (its history stays) |
 | `curious list` | open questions, each with the agent's own words it came from |
 | `curious drop ID` / `curious adopt ID [--rank N]` | turn a question down; make it a desire |
 | `recall WORDS` | exactly what recall would hand the model for these words, with each session's score |
 | `log` | what was dropped, and why |
 
-The commands that list things only read: they never call the model and never write a row. A session that
-sat idle ends at your next `chat` or `session end`, and `curious list` tells you when one is waiting.
+After each `chat` turn, lines starting `--` show everything the reply wrote: each belief recorded, an
+intention marked done, how many proposed changes were rejected, and any session recall skipped.
+
+The commands that list things only read: they never call the model and never write a row, and they need
+no key (nor does `session delete`). One exception: `recall` embeds any of your messages not yet embedded.
+A session that sat idle ends at your next `chat` or `session end`; `curious list` and `recall` tell you
+when one is waiting.
 
 **Who decides what.** You write and rank the desires. Each turn, plain code (not the model) picks the
 intention that serves your highest-ranked live desire whose intention isn't done. The model can suggest a
-re-ranking in its reply; only your command changes a rank. A question becomes a desire only when you say
-`curious adopt` (you can switch on `auto_adopt`; it's off by default).
+re-ranking in its reply; only your command changes a rank. The model's one lever: it can mark the current
+intention done by citing a turn it was shown. You see that after the reply, and `intentions reopen ID`
+undoes it. A belief flagged for your review stays flagged, even when the model rewrites it, until you say
+`beliefs ok ID`. A question becomes a desire only when you say `curious adopt` (you can switch on
+`auto_adopt`; it's off by default).
 
 **What dropping a question does.** `curious drop` keeps it in the file, and curiosity skips any new
 question within 0.85 similarity of an open or dropped one. With the default hash embedder that catches a
-question in nearly the same words ("at step 400" against "around step 400" scores 0.92), but ordinary
-rewordings score 0.69 to 0.76 ("Why do the mice lose weight?" against "Why are the mice losing weight?"
-is 0.76), so a dropped question **can come back in new words**. With bge-small the match is by meaning,
-but how well it catches rewordings hasn't been measured here.
+question in nearly the same words ("Why does the training loss spike at step 400?" against "...around step
+400?" scores 0.92), but ordinary rewordings score 0.69 to 0.76 ("Why do the mice lose weight?" against
+"Why are the mice losing weight?" is 0.76), so a dropped question **can come back in new words**. It can
+also skip a *different* question that shares nearly all its words: "Why do male mice lose weight?" against
+"...female mice..." scores 0.90, and "Why does the model converge?" against "...not converge?" 0.92. `log`
+names every skip and the question it matched. A question you adopted isn't matched, so the agent can raise
+it again. With bge-small the match is by meaning, but how well it works hasn't been measured here.
 
 ## What it remembers, and how to delete it
 
@@ -146,22 +164,27 @@ beliefs, desires, intentions, curiosity's questions, and a log of what was rejec
 sqlite3 memory/agent.db .tables
 python -c "import sqlite3; print(sqlite3.connect('memory/agent.db').execute('SELECT name FROM sqlite_master').fetchall())"
 ```
-With Ollama nothing leaves your machine. With an API key, each turn sends the recalled sessions, the
-current beliefs and this session to that provider, and curiosity sends the agent's own turns once when a
-session ends.
+With Ollama at its usual address on this computer (`http://localhost:11434`) nothing leaves your machine,
+and a local address never goes through a proxy set in your environment. A `base_url` on another machine,
+or an Ollama cloud model, sends everything there. With an API key, each turn sends the recalled sessions,
+the current beliefs, the current intention and this session to that provider, and curiosity sends the
+agent's own turns once when a session ends. With bge-small, set `HF_HUB_OFFLINE=1` after its first download
+so it doesn't check huggingface.co at each start (no session text goes there). If this folder sits in a
+cloud-synced place (OneDrive, iCloud), `memory/agent.db` is uploaded with it.
 
 **Private, in its own folder.** Each agent's memory lives in its own folder: `memory/` beside that
 agent's `agent.json` (or where you run it, if there's none). There's no shared location, so a second
 agent with its own `agent.json` in another folder gets its own `memory/`. On Linux and macOS the agent
 creates that folder readable by you alone (mode 700) and the file too (600). On Windows those modes don't
 apply, and the folder is as private as your user folder. If you set `db` to a folder that already exists,
-that folder keeps its permissions; the file is still made 600.
+that folder keeps its permissions; the file is still made 600. A `db` that names a file that isn't
+Kindling's memory (a typo, another program's database) is refused and left untouched.
 
 **What is changed in place.** Records are otherwise never edited in place: a change appends a new row that
 points at the old one (`supersedes`), so `beliefs history ID` shows how a view moved and why. The
-exceptions, by name: a session's `title` (its first message) and `ended_at` are filled in place; a
-message the model never answered is taken back, so a retry isn't stored twice; and deleting a session
-removes and overwrites what was written in it, because your word wins.
+exceptions, by name: a session's `title` (its first message), `ended_at` and `read_at` (when curiosity
+read it) are filled in place; a message the model never answered is taken back, so a retry isn't stored
+twice; and deleting a session removes and overwrites what was written in it, because your word wins.
 
 **When you delete a session, no text written in it stays in the file.** `session delete ID` removes:
 
@@ -179,13 +202,18 @@ removes and overwrites what was written in it, because your word wins.
 - that session's turns from the evidence of a done intention (with no evidence left, it's active again);
 - the questions curiosity found in it, and any desire adopted from them, which become markers too.
 
-Then the file is rebuilt (SQLite's `VACUUM`) so the deleted text doesn't linger in its free space.
+SQLite overwrites the deleted text with zeros as the delete happens (`secure_delete`), and then the file is
+rebuilt (`VACUUM`) to shrink it; if that fails (a full disk), the delete still stands and you're told. A
+delete from another terminal while the model is answering wins: that reply, its belief changes and
+curiosity's questions are not kept. A delete also clears anything an older Kindling left behind for a
+session that no longer exists.
 
 What it can't reach, plainly: text written in a *later* session stays, even when it repeats the deleted
 session. That covers the agent's replies there, and a belief written there that cited the deleted session
 alongside other evidence (its wording stays, flagged for review). Delete that later session too if you
-want its words gone. Copies outside the file (your backups, an API provider's logs) are outside its reach.
-To delete everything, delete the `memory` folder.
+want its words gone. Older versions of a belief that survived keep the deleted turns' *ids* in their
+evidence (ids only, no text). Copies outside the file (your backups, an API provider's logs) are outside
+its reach. To delete everything, delete the `memory` folder.
 
 ## Settings (`agent.json`)
 
@@ -194,26 +222,40 @@ To delete everything, delete the `memory` folder.
 | `db` | `memory/agent.db` | the one file; a relative path starts from the folder holding `agent.json` |
 | `backend` | `fake` | `fake`, `ollama`, `openai` or `anthropic` |
 | `model`, `base_url` | blank | blank means the backend's usual one |
-| `api_key_env` | blank | the NAME of the variable holding your key |
+| `api_key_env` | blank | the NAME of the variable holding your key (blank: the usual one, for the provider's own address) |
 | `embedder` | `hash` | `hash` (needs nothing) or `bge-small` |
-| `recall_budget_tokens` | 8000 | recalled sessions per turn, counted as about 4 characters a token |
+| `context_tokens` | 0 | the model's window; 0 means the backend's usual one (Ollama 12,288, OpenAI-compatible 16,384, Anthropic 1,000,000) |
+| `recall_budget_tokens` | 8000 | the most recalled sessions may take per turn, counted as about 4 characters a token (0 or more) |
 | `idle_minutes` | 30 | a session ends after this long without a message, at your next `chat` (nothing runs in the background) |
-| `question_queue` | 20 | the most open questions; past it, the oldest expires (it isn't deleted) |
-| `dedupe_similarity` | 0.85 | a new question this close to an open or dropped one is skipped (see "What dropping a question does") |
+| `question_queue` | 20 | the most open questions (at least 1); past it, the oldest expires (it isn't deleted) |
+| `dedupe_similarity` | 0.85 | from 0 to 1: a new question this close to an open or dropped one is skipped |
 | `auto_adopt` | false | turn new questions into desires without asking you |
 
-A mistake in `agent.json` (a missing comma, `"8000"` in quotes where a number goes) stops the agent with
-a message that names the setting.
+A mistake in `agent.json` (a missing comma, `"8000"` in quotes where a number goes, a number out of range)
+stops the agent with a message that names the setting.
+
+**The context window, and long sessions.** Each turn's recall budget is the smaller of
+`recall_budget_tokens` and what the model's context leaves: `context_tokens`, minus the rest of the prompt
+(this session, the beliefs, the instructions), minus room for the answer (a quarter of the context, at least
+1,024 tokens). With under about 1,000 tokens left, recall is skipped and you're told. Before anything is
+sent, the whole prompt is checked against the context with a quarter to spare (four characters a token
+undercounts code, numbers and other languages); one too long is refused with a message, never cut in
+silence, and Ollama's own count is checked after each reply. A session is never cut in half, so a session
+bigger than the budget is never recalled, and a 30-turn day with real replies can be that big. `chat` and
+`recall` name such a session when it would have been recalled. End long days with `/end`, or raise both settings if your
+model has room.
 
 ## Reading the code
 
-In this order: `agent.py` (the loop, about 100 lines), `recall.py`, `bdi.py`, `curiosity.py`, `models.py`,
+In this order: `agent.py` (the loop, about 140 lines), `recall.py`, `bdi.py`, `curiosity.py`, `models.py`,
 `store.py`, `embed.py`, `config.py`, `cli.py`, `fixtures.py`. Each file starts with a note on what it does.
 
 - **Recall** scores each of your past messages two ways, BM25 (shared words) and the embedder (similar
   meaning), fuses the two rankings (reciprocal rank fusion, k = 60, embeddings weighted 2 and words 1),
   scores each session by its best two messages, and hands over whole sessions, best first, within the
-  budget, never half of one. Inside the pack they run oldest to newest. Only your messages are indexed, so
+  budget, never half of one. Inside the pack they run oldest to newest. Stored embeddings are filed under
+  the embedder's name and a fingerprint of what it does, so if you change an embedder, your messages are
+  embedded again rather than mixed with old ones. Only your messages are indexed, so
   the agent's own words can't pull a session up. The agent asks its memory one thing,
   `Memory.recall(query, budget_tokens)`, which returns the sessions with their scores and names what made
   the scores. To try another retriever, write a class with that one method and pass it as
@@ -222,15 +264,20 @@ In this order: `agent.py` (the loop, about 100 lines), `recall.py`, `bdi.py`, `c
   stored only if it cites turns the model was shown (from the recalled sessions or this one) and a
   confidence from 0 to 1; otherwise it's dropped and logged (`log`).
 - **Curiosity** runs once when a session ends: one model call reads the agent's own turns and lists the
-  questions it raised and didn't answer. Each must quote 2 to 20 of the agent's words exactly, from the
-  turn it names, or it's dropped. It never searches outside and never talks to you on its own.
+  questions it raised and didn't answer. If that call fails, the session stays unread and the next session
+  end tries again. Each question must quote 2 to 20 of the agent's words exactly, from the turn it names,
+  or it's dropped: the quote shows where in the agent's words it came from, so check that it really asks
+  that. Words are counted by spaces, so in a language written without them (Chinese, Japanese, Thai) no
+  question passes yet. It never searches outside and never talks to you on its own.
 
 **Try one part alone.** `python -m starter_agent.fixtures recall` (or `bdi`, or `curiosity`) runs one
 part on a few made-up sessions, in memory and offline. Change the data in `fixtures.py` to try a case of
 your own; `tests/test_fixtures.py` checks each part this way.
 
-**How we know the tests can fail.** `python tests/mutants.py` copies the code to a scratch folder, plants
-one bug at a time (each listed with the promise it breaks), and checks that a test fails by assertion.
+**How we know the tests can fail.** `python tests/mutants.py` copies the code (only the code: never your
+`.venv`, `.env` or memory) to a scratch folder, plants one bug at a time (each listed with the promise it
+breaks), and checks that a test itself fails, not that the package crashes. It removes each killed
+mutant's folder, and the whole scratch folder if every mutant was killed.
 
 ## Credits
 
