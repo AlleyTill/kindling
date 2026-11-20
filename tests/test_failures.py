@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from conftest import Clock, add_session, only, say
+from conftest import Clock, add_session, agent_turns, only, say, scripted
 from starter_agent import bdi, curiosity
 from starter_agent.agent import Agent
 from starter_agent.config import Config
@@ -280,3 +280,32 @@ def test_a_file_that_isnt_kindlings_memory_is_left_alone(tmp_path):
         stopped = outcome(Store, str(path), Clock())
         assert isinstance(stopped, SystemExit), path
         assert (path.stat().st_mode, path.read_bytes() if path.is_file() else None) == before
+
+
+# --- One session too long for curiosity doesn't stop it reading the others (r3 verifier's HIGH) -------------
+
+def test_one_session_too_long_for_curiosity_doesnt_stop_it_reading_the_others(make_agent):
+    read = []
+
+    def curious(prompt):
+        read.append(sorted(agent_turns(prompt)))
+        return '{"questions": []}'
+    agent = make_agent(fn=scripted([], curious), context_tokens=2000)
+    store = agent.store
+    big, _ = add_session(store, [("user", "tell me everything"), ("agent", "word " * 3000)])   # ~3,750 tokens
+    _, first = add_session(store, [("user", "hi"), ("agent", "why is the sky blue?")])
+    _, second = add_session(store, [("user", "hi"), ("agent", "why do rats sleep by day?")])
+    agent.end_session()
+    assert [s["id"] for s in store.unread_sessions()] == [big]          # only the big one stays unread
+    assert read == [[first[1]], [second[1]]]                            # the two after it were read
+    assert any(f"session {big} is too long" in note and "context_tokens" in note for note in agent.notes)
+
+
+def test_deleting_the_last_session_keeps_the_record_of_earlier_deletes(make_agent):
+    agent = make_agent()
+    add_session(agent.store, [("user", "first")])
+    add_session(agent.store, [("user", "second")])
+    agent.delete_session(1)
+    agent.delete_session(2)
+    reasons = [r[0] for r in agent.store.db.execute("SELECT reason FROM log WHERE kind='deleted' ORDER BY id")]
+    assert [r.split(" deleted")[0] for r in reasons] == ["session 1", "session 2"]

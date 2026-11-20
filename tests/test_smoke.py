@@ -51,7 +51,8 @@ def test_idle_gap_ends_the_session_at_the_next_chat_and_curious_list_only_says_s
     assert "why is it raining?" in capsys.readouterr().out
 
 
-def test_the_commands_that_list_things_never_call_the_model_or_write(tmp_path, capsys):
+def test_the_commands_that_list_things_never_call_the_model_or_write(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)                    # never the student's own agent.json in the working folder
     clock, model = Clock(), FakeModel()            # the demo model, recording every call
     run = lambda *argv: main(["--db", str(tmp_path / "agent.db"), *argv], model=model, clock=clock)
     run("chat", "remember: rats sleep by day")     # session 1, ended below, so there is something to list

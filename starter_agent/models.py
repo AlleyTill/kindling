@@ -24,6 +24,10 @@ class ModelError(Exception):
     """The model's server answered with something the agent can't use, or the prompt can't be sent."""
 
 
+class PromptTooLong(ModelError):
+    """The prompt won't fit the model's context with a quarter to spare, so it wasn't sent."""
+
+
 class FakeModel:
     """Give it a list of replies (used in order) or a function of the messages."""
 
@@ -82,7 +86,7 @@ def check_fits(messages, context):
     so the prompt must fit with a quarter to spare."""
     size = estimate_tokens("".join(m["content"] for m in messages))
     if size * 5 // 4 > context:
-        raise ModelError(f"The prompt is about {size:,} tokens: too long for the model's {context:,}-token "
+        raise PromptTooLong(f"The prompt is about {size:,} tokens: too long for the model's {context:,}-token "
                          "context, so it wasn't sent (it would be cut without the model knowing). End this "
                          'session (/end, or `session end`), or raise "context_tokens" in agent.json')
 

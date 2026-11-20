@@ -198,7 +198,7 @@ class Store:
         orphan = "session_id NOT IN (SELECT id FROM sessions)"
         self.db.execute(f"DELETE FROM vectors WHERE turn_id IN (SELECT id FROM turns WHERE {orphan})")
         self.db.execute(f"DELETE FROM turns WHERE {orphan}")
-        self.db.execute(f"DELETE FROM log WHERE {orphan}")
+        self.db.execute(f"DELETE FROM log WHERE session_id IS NOT NULL AND {orphan}")   # keep the delete records
 
     # --- versioned records: beliefs, desires, intentions, questions ---------------------------
 
