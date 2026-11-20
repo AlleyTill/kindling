@@ -119,6 +119,13 @@ class PointEmbedder:
         return [self.vectors.get(text, [0.0, 0.0, 1.0]) for text in texts]
 
 
+def only(rows):
+    """The one row expected: none or several fails by assertion, so a mutant counts as caught, not as a crash."""
+    rows = list(rows)
+    assert len(rows) == 1, rows
+    return rows[0]
+
+
 def add_session(store, turns):
     """Write a finished session straight into the store: turns is a list of (role, text)."""
     sid = store.start_session()

@@ -294,11 +294,13 @@ MUTANTS = [
         "        for unread in self.store.unread_sessions():",
         "        for unread in [session] if session else []:")]),
     ("curiosity's failure is logged, whatever it was", "starter_agent/agent.py", [(
-        "            except Exception as error:     # it stays unread", "            except OSError as error:")]),
+        "            except Exception as error:     # it stays unread, and the next session end tries again",
+        "            except OSError as error:")]),
     ("curiosity writes nothing for a session deleted meanwhile", "starter_agent/curiosity.py", [(
         "        if store.session(session_id) is None:\n            return []\n", "")]),
     ("adopting a question is one step", "starter_agent/curiosity.py", [(
-        "    with store.transaction():                  # the desire and the adoption", "    if True:")]),
+        "    with store.transaction():                  # the desire and the adoption, together or not at all",
+        "    if True:")]),
     # --- Round 3: the context (Nexus) ---------------------------------------------------------------------
     ("recall's budget is what the context leaves", "starter_agent/agent.py", [(
         'room = context - estimate_tokens("".join(m["content"] for m in bare)) - max(context // 4, 1024)',
@@ -415,6 +417,8 @@ MUTANTS = [
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),
     ("a mutant that hangs is a row, not the end of the run", "tests/mutants.py", [(
         "    except subprocess." "TimeoutExpired:", "    except ZeroDivisionError:")]),   # split: not this line
+    ("a mutant that isn't valid Python is reported, not run", "tests/mutants.py", [(
+        '        compile(text, ' 'file, "exec")', "        pass")]),                                   # split: not this line
     ("a crash in the package isn't a kill", "tests/mutants.py", [(
         'kind == "AssertionError" and Path(where)' '.parent.name == "tests"', 'kind == "AssertionError"')]),
 ]
@@ -469,6 +473,10 @@ def mutate(frozen, number, file, swaps):
         if text.count(old) != 1:
             return None, f"the text to replace occurs {text.count(old)} times in {file}"
         text = text.replace(old, new)
+    try:
+        compile(text, file, "exec")
+    except SyntaxError as error:                   # a broken mutant would prove nothing
+        return None, f"the mutant isn't valid Python ({error.msg}, line {error.lineno})"
     path.write_text(text)
     return folder, None
 

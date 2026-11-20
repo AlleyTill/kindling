@@ -77,19 +77,20 @@ def test_every_command(cli, capsys, monkeypatch, tmp_path):
     assert cli("session", "delete", "1", "--yes") == 0 and cli("beliefs") == 0
     assert out().endswith("}\n")                                               # no beliefs left
     # mistakes get a message and exit code 1, not a traceback
+    def code_of(*argv):
+        try:                                      # a traceback must fail by assertion, not crash the test
+            return cli(*argv)
+        except BaseException as stop:
+            return getattr(stop, "code", stop)
     for argv in (["desire", "add"], ["desire", "rank", "3"], ["desire", "rank", "99", "1"], ["desire", "drop", "x"],
                  ["desire", "rank", "5", "1"], ["desire", "drop", "5"],                  # 5 was dropped above
                  ["desire", "rank", "99999999999999999999", "1"], ["beliefs", "history", "99"],
                  ["beliefs", "ok", "99"], ["beliefs", "drop"], ["intentions", "reopen", "99"],
                  ["curious", "drop", "99"], ["curious", "adopt"], ["session", "show", "99"], ["session", "delete"]):
-        assert cli(*argv) == 1, argv
+        assert code_of(*argv) == 1, argv
         assert out().strip()
     for argv in (["session", "show", "99999999999999999999"], ["curious", "drop", "-99999999999999999999"]):
-        try:                                      # argparse stops with its own message, not a traceback
-            code = cli(*argv)
-        except BaseException as stop:
-            code = getattr(stop, "code", stop)
-        assert code == 2, argv
+        assert code_of(*argv) == 2, argv          # argparse stops with its own message
 
 
 def test_a_mistake_in_agent_json_gets_a_message_not_a_traceback(cli, tmp_path):

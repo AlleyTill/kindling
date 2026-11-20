@@ -28,6 +28,13 @@ def test_a_mutant_that_hangs_is_a_timeout_row(tmp_path, monkeypatch):
     assert mutants.verdict(run)[0] == "TIMEOUT"
 
 
+def test_a_mutant_that_isnt_valid_python_is_not_applied(tmp_path):
+    (tmp_path / "snapshot" / "pkg").mkdir(parents=True)
+    (tmp_path / "snapshot" / "pkg" / "a.py").write_text("try:\n    x = 1  # one, two\nexcept OSError:\n    pass\n")
+    folder, problem = mutants.mutate(tmp_path / "snapshot", 1, "pkg/a.py", [("x = 1  # one", "if True:")])
+    assert folder is None and "isn't valid Python" in problem
+
+
 def test_only_a_test_failing_counts_as_a_kill():
     def judge(kind, where):
         return mutants.verdict({"exit": 1, "ran": 9, "failed": [["tests/test_a.py::test_it", "call", kind, where]]})[0]

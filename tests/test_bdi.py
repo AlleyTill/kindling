@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from conftest import add_session, agent_turns, say, scripted
+from conftest import add_session, agent_turns, only, say, scripted
 from starter_agent import bdi, curiosity
 
 
@@ -355,7 +355,7 @@ def three_versions(make_agent):
 def test_bdi_6f_the_fallback_is_the_latest_version_outside_the_deleted_session(make_agent):
     agent = three_versions(make_agent)
     agent.delete_session(3)                             # GANNET's session: back to S2's version (W2: not S1's)
-    (now,) = bdi.current_beliefs(agent.store)
+    now = only(bdi.current_beliefs(agent.store))
     assert (now["text"], json.loads(now["evidence"]), now["flag"]) == (
         "Weighing is on Mondays, says PELICAN", [1], "review")
 
@@ -364,7 +364,7 @@ def test_bdi_6g_a_version_written_in_the_deleted_session_goes_even_if_it_cites_o
     agent = three_versions(make_agent)
     agent.delete_session(3)
     agent.delete_session(2)                             # PELICAN was written in S2, citing S1 only (W1)
-    (now,) = bdi.current_beliefs(agent.store)
+    now = only(bdi.current_beliefs(agent.store))
     assert (now["text"], json.loads(now["evidence"]), now["flag"]) == ("Weighing is on Mondays", [1], "review")
     assert "PELICAN" not in "\n".join(agent.store.db.iterdump())
 
@@ -383,7 +383,7 @@ def test_bdi_6h_the_fallback_drops_a_turn_an_earlier_delete_took(make_agent):
                              "session_id": s2, "flag": None}, store.get("beliefs", v1))
     agent.delete_session(s0)
     agent.delete_session(s2)
-    (now,) = bdi.current_beliefs(store)
+    now = only(bdi.current_beliefs(store))
     assert (now["text"], json.loads(now["evidence"])) == ("The mice huddle because the room is cold", [y])
 
 
@@ -421,7 +421,7 @@ def test_bdi_7_a_model_restating_a_flagged_belief_does_not_clear_the_flag(make_a
     replies.append(say("Mondays.", beliefs=[{"text": "Mondays, on the new scale", "confidence": 0.95,
                                              "evidence": [5], "supersedes": flagged["id"]}]))
     agent.handle("anything at all")                      # turn 5
-    (now,) = bdi.current_beliefs(agent.store)
+    now = only(bdi.current_beliefs(agent.store))
     assert now["supersedes"] == flagged["id"] and now["flag"] == "review"
     assert "still flagged for your review" in agent.notes[0]
 
@@ -448,10 +448,10 @@ def test_bdi_7d_beliefs_history_shows_a_deleted_versions_marker(make_agent):
     from starter_agent.cli import show_belief
     agent = make_agent()
     s1, (t1, _) = add_session(agent.store, [("user", "The code word is HEMLOCK."), ("agent", "ok")])
-    only = agent.store.append("beliefs", {"text": "HEMLOCK", "confidence": 0.9, "evidence": json.dumps([t1]),
-                                          "session_id": s1, "flag": None})
+    belief = agent.store.append("beliefs", {"text": "HEMLOCK", "confidence": 0.9, "evidence": json.dumps([t1]),
+                                            "session_id": s1, "flag": None})
     agent.delete_session(s1)
-    (marker,) = agent.store.history("beliefs", only)
+    marker = only(agent.store.history("beliefs", belief))
     assert re.fullmatch(r"#\d+  \[removed\] a belief derived from a deleted session was removed on .*",
                         show_belief(marker))
 
@@ -498,7 +498,7 @@ def test_bdi_9_a_done_intention_keeps_its_other_evidence_and_stays_done(make_age
     bdi.add_desire(store, "Replicate figure 3")
     agent.handle("And the statistics match too.")       # turn 3; cites the recalled turn 1 and turn 3
     agent.delete_session(s1)
-    (intention,) = store.current("intentions")
+    intention = only(store.current("intentions"))
     assert (intention["status"], json.loads(intention["evidence"])) == ("done", [3])
 
 

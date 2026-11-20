@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from conftest import Clock, add_session, say
+from conftest import Clock, add_session, only, say
 from starter_agent import bdi, curiosity
 from starter_agent.agent import Agent
 from starter_agent.config import Config
@@ -216,7 +216,7 @@ def test_a_broken_character_is_repaired_in_a_turn_and_rejected_in_a_belief(make_
     assert outcome(agent.handle, "caf\udce9") == "half an emoji ?"
     assert [t["text"] for t in agent.store.turns(1)] == ["caf?", "half an emoji ?"]
     assert [b["text"] for b in bdi.current_beliefs(agent.store)] == ["kept before", "kept after"]
-    (reason,) = [r[0] for r in agent.store.db.execute("SELECT reason FROM log WHERE kind='rejected belief'")]
+    reason = only([r[0] for r in agent.store.db.execute("SELECT reason FROM log WHERE kind='rejected belief'")])
     assert "broken character" in reason
 
 
