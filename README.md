@@ -225,7 +225,7 @@ its reach. To delete everything, delete the `memory` folder.
 | `model`, `base_url` | blank | blank means the backend's usual one |
 | `api_key_env` | blank | the NAME of the variable holding your key (blank: the usual one, for the provider's own address) |
 | `embedder` | `hash` | `hash` (needs nothing) or `bge-small` |
-| `context_tokens` | 0 | the model's window; 0 means the backend's usual one (Ollama 12,288, OpenAI-compatible 16,384, Anthropic 1,000,000) |
+| `context_tokens` | 0 | the model's window, in tokens; set, it always wins. 0 means: for Ollama, the 12,288 Kindling asks it for; otherwise the window the server says it has (vLLM's `/v1/models`, llama.cpp's `/props`, Anthropic's models API), asked once per run; if it can't say, OpenAI-compatible 16,384 and Anthropic 1,000,000, and Kindling says it's assuming |
 | `recall_budget_tokens` | 8000 | the most recalled sessions may take per turn, in Kindling's estimated tokens (0 or more) |
 | `idle_minutes` | 30 | a session ends after this long without a message, at your next `chat` (nothing runs in the background) |
 | `question_queue` | 20 | the most open questions (at least 1); past it, the oldest expires (it isn't deleted) |
@@ -236,7 +236,7 @@ A mistake in `agent.json` (a missing comma, `"8000"` in quotes where a number go
 stops the agent with a message that names the setting.
 
 **The context window, and long sessions.** Each turn's recall budget is the smaller of
-`recall_budget_tokens` and what the model's context leaves: `context_tokens`, minus the rest of the prompt
+`recall_budget_tokens` and what the model's context leaves: its window (see `context_tokens`), minus the rest of the prompt
 (this session, the beliefs, the instructions), minus room for the answer (a quarter of the context, at least
 1,024 tokens). With under about 1,000 tokens left, recall is skipped and you're told. Tokens are estimated
 without a tokenizer: four characters a token for words, half a token for each punctuation mark, and a whole
@@ -248,7 +248,10 @@ silence. Ollama is also asked to refuse one itself (`"truncate": false`), and it
 the same message, with Ollama's own count. That was tested on Ollama 0.32.1: an older Ollama may ignore
 it and cut a long prompt without saying so, and Kindling tells you when the Ollama it talks to is older.
 After a reply, Ollama's count warns you only that the prompt left almost no room for the reply. It can't
-show a cut: Nexus found that a prompt Ollama cut counts *less* (about half the window), not more. A session is never cut in half, so a session
+show a cut: Nexus found that a prompt Ollama cut counts *less* (about half the window), not more. After
+each reply, the server's own count of the prompt (Ollama, OpenAI-compatible and Anthropic replies carry one)
+is compared with the estimate, and a miss of over a quarter is printed, so you can see how the estimate
+does on your text; it is never taken as a sign of a cut. A session is never cut in half, so a session
 bigger than the budget is never recalled, and a 30-turn day with real replies can be that big. `chat` and
 `recall` name such a session when it would have been recalled. End long days with `/end`, or raise both settings if your
 model has room.

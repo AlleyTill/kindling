@@ -154,6 +154,132 @@ def test_an_ollama_older_than_the_one_tested_is_named_once_per_run(wire, capsys,
         assert 'may ignore "truncate": false and cut a prompt too long' in err
 
 
+# --- The window comes from the server where it can say; agent.json always wins (Nexus, 20 Nov) -------------
+
+VLLM = "http://localhost:8000/v1"
+
+
+def window_of(wire, facts, **settings):
+    """The window the agent would use with these settings, when the servers say `facts` ({url: JSON})."""
+    wire.facts.update(facts)
+    config = Config(**{"backend": "openai", "model": "m", "base_url": VLLM, **settings})
+    return models.context_of(config, models.make_model(config))
+
+
+def test_vllm_says_its_window_on_v1_models(wire):
+    listed = {"data": [{"id": "other", "max_model_len": 99999}, {"id": "m", "max_model_len": 4096}]}
+    assert window_of(wire, {f"{VLLM}/models": listed}) == 4096
+    assert [url for url, _ in wire.asked] == [f"{VLLM}/models"]                  # /props wasn't needed
+
+
+@pytest.mark.parametrize("props", [{"n_ctx": 3072}, {"default_generation_settings": {"n_ctx": 3072}}])
+def test_llama_cpp_says_its_window_on_props(wire, props):
+    listed = {"data": [{"id": "m", "meta": {"n_ctx_train": 131072}}]}           # its training length, not its window
+    assert window_of(wire, {f"{VLLM}/models": listed, "http://localhost:8000/props": props}) == 3072
+
+
+@pytest.mark.parametrize("facts", [{}, {f"{VLLM}/models": {"data": [{"id": "other", "max_model_len": 4096}]}},
+                                   {f"{VLLM}/models": {"data": [{"id": "m", "max_model_len": "4096"}]}},
+                                   {f"{VLLM}/models": {"data": "m"}, "http://localhost:8000/props": [3072]},
+                                   {"http://localhost:8000/props": {"n_ctx": 0}}])
+def test_a_server_that_cant_say_gets_the_usual_window_said_once(wire, capsys, facts):
+    assert window_of(wire, facts) == window_of(wire, {}) == 16384
+    assert capsys.readouterr().err.count("assuming a 16,384-token window; set context_tokens in agent.json") == 1
+    assert [url for url, _ in wire.asked] == [f"{VLLM}/models", "http://localhost:8000/props"]   # once each
+
+
+def test_anthropic_says_its_window_asked_with_the_same_headers_as_a_message(wire, monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    wire.facts["https://api.anthropic.com/v1/models/claude-opus-5-5"] = {"id": "claude-opus-5-5",
+                                                                         "max_input_tokens": 200000}
+    config = Config(backend="anthropic")
+    model = models.make_model(config)
+    assert models.context_of(config, model) == 200000
+    wire.reply = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}
+    assert model.complete(MESSAGES) == "ok"
+    ((_, asked),), ((_, _, sent),) = wire.asked, wire.sent
+    assert asked == sent and asked.get("x-api-key") == "test-key-not-real" and "anthropic-version" in asked
+    assert "assuming" not in capsys.readouterr().err
+
+
+def test_anthropic_that_cant_say_gets_the_usual_window_said_once(wire, monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    assert window_of(wire, {}, backend="anthropic", model="", base_url="") == 1_000_000
+    assert window_of(wire, {}, backend="anthropic", model="", base_url="") == 1_000_000
+    assert capsys.readouterr().err.count("assuming a 1,000,000-token window; set context_tokens") == 1
+
+
+def test_ollamas_window_is_the_num_ctx_kindling_sends_and_needs_no_question(wire):
+    config = Config(backend="ollama")
+    model = models.make_model(config)
+    assert models.context_of(config, model) == model.num_ctx == 12288 and wire.asked == []
+
+
+@pytest.mark.parametrize("settings", [{}, {"backend": "anthropic", "base_url": ""}, {"backend": "ollama"}],
+                         ids=["openai", "anthropic", "ollama"])
+def test_context_tokens_in_agent_json_always_wins_and_nothing_is_asked(wire, monkeypatch, capsys, settings):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    says_4096 = {f"{VLLM}/models": {"data": [{"id": "m", "max_model_len": 4096}]},
+                 "http://localhost:8000/props": {"n_ctx": 4096},
+                 "https://api.anthropic.com/v1/models/m": {"max_input_tokens": 4096}}
+    assert window_of(wire, says_4096, context_tokens=5000, **settings) == 5000
+    assert wire.asked == [] and capsys.readouterr().err == ""
+
+
+def test_the_servers_window_sizes_the_length_check(wire, tmp_path):
+    """llama.cpp started with a 2,048-token window: the usual 16,384 would let prompts eight times too big through."""
+    wire.facts["http://localhost:8000/props"] = {"n_ctx": 2048}
+    config = Config(db=str(tmp_path / "agent.db"), backend="openai", model="m", base_url=VLLM)
+    agent = Agent(Store(config.db, Clock()), models.make_model(config), HashEmbedder(), config)
+    error = outcome(agent.handle, "a long paste " * 600)               # ~2,000 tokens: under 16,384, over 2,048
+    assert isinstance(error, PromptTooLong) and "2,048-token" in str(error), error
+    assert wire.sent == []                                             # refused before it was sent
+
+
+# --- After each call, the server's own count checks the estimate: a miss is logged, never read as a cut -------
+
+PROSE = [{"role": "user", "content": "x" * 4000}]                       # estimated 1,000 tokens
+COUNTED = {"ollama": lambda n: {"message": {"content": "ok"}, "prompt_eval_count": n},
+           "openai": lambda n: {"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": n}},
+           "anthropic": lambda n: {"content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": n}}}
+
+
+def backend(wire, monkeypatch, name):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+    return models.make_model(Config(backend=name, model="m", base_url=VLLM if name == "openai" else ""))
+
+
+@pytest.mark.parametrize("name", COUNTED)
+def test_a_miss_over_a_quarter_is_logged_and_never_called_a_cut(wire, capsys, monkeypatch, name):
+    model = backend(wire, monkeypatch, name)
+    for counted, logged in ((1200, False), (800, False), (1300, True), (700, True)):
+        wire.reply = COUNTED[name](counted)
+        assert model.complete(PROSE) == "ok"
+        err = capsys.readouterr().err
+        assert ("over a quarter" in err) is logged, (counted, err)
+        if logged:
+            assert f"counted {counted:,} prompt tokens; Kindling estimated 1,000" in err
+            assert "it doesn't mean the prompt was cut" in err
+
+
+@pytest.mark.parametrize("name", COUNTED)
+@pytest.mark.parametrize("count", [None, "lots", 1.5, True, -3, 0, [1200], {"n": 1}])
+def test_the_after_call_compare_never_raises_whatever_the_count(wire, capsys, monkeypatch, name, count):
+    model = backend(wire, monkeypatch, name)
+    wire.reply = COUNTED[name](count)
+    assert outcome(model.complete, PROSE) == "ok"
+    assert capsys.readouterr().err == ""                                # no count it can read: nothing to say
+
+
+@pytest.mark.parametrize("usage", ["n/a", [1200], None, 7])
+def test_the_after_call_compare_never_raises_whatever_the_usage(wire, monkeypatch, usage):
+    for name, path in (("openai", "prompt_tokens"), ("anthropic", "input_tokens")):
+        model = backend(wire, monkeypatch, name)
+        wire.reply = {**COUNTED[name](1000), "usage": usage}
+        assert outcome(model.complete, PROSE) == "ok", (name, path)
+
+
 def test_openai_compatible_request_and_reply(wire, monkeypatch):
     monkeypatch.setenv("KINDLING_TEST_KEY", "test-key-not-real")
     wire.reply = {"choices": [{"message": {"content": "hello"}}]}

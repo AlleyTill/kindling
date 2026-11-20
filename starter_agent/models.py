@@ -69,13 +69,24 @@ def demo_brain(messages):
 
 # --- The context window: one number, read by the request and by recall's budget (Nexus) ---------------
 
-CONTEXT = {"fake": 12288, "ollama": 12288, "openai": 16384, "anthropic": 1_000_000}   # each backend's usual
+CONTEXT = {"fake": 12288, "ollama": 12288, "openai": 16384, "anthropic": 1_000_000}   # if the server can't say
 
 
-def context_of(config):
-    """The model's context window in tokens: "context_tokens" in agent.json, or the backend's usual one.
-    Ollama is asked for exactly this window (num_ctx), and recall's budget is sized from the same number."""
-    return config.context_tokens or CONTEXT.get(config.backend, 12288)
+def context_of(config, model=None):
+    """The model's context window in tokens. "context_tokens" in agent.json always wins; then the window the
+    model's server says it has (model.window(), asked once per run); then the backend's usual one. Ollama
+    is asked for exactly this window (num_ctx), and recall's budget is sized from the same number."""
+    if config.context_tokens:
+        return config.context_tokens
+    window = getattr(model, "window", None)
+    return (window() if window else None) or CONTEXT.get(config.backend, 12288)
+
+
+def assumed(backend):
+    """The backend's usual window, for a server that didn't say what its window is. Said once per run."""
+    note_once(f"Note: the server didn't say how long its context window is, so Kindling is assuming a "
+              f"{CONTEXT[backend]:,}-token window; set context_tokens in agent.json")
+    return CONTEXT[backend]
 
 
 def estimate_tokens(text):
@@ -93,11 +104,26 @@ def estimate_tokens(text):
 def check_fits(messages, context):
     """Refuse, loudly, a prompt too long for the context, before it's sent: a server may cut it without
     telling the model. The estimate is only an estimate, so the prompt must fit with a quarter to spare."""
-    size = estimate_tokens("".join(m["content"] for m in messages))
+    size = prompt_size(messages)
     if size * 5 // 4 > context:
         raise PromptTooLong(f"The prompt is about {size:,} tokens: too long for the model's {context:,}-token "
                          "context, so it wasn't sent (it would be cut without the model knowing). End this "
                          'session (/end, or `session end`), or raise "context_tokens" in agent.json')
+
+
+def prompt_size(messages):
+    return estimate_tokens("".join(m["content"] for m in messages))
+
+
+def compare_count(server, messages, counted):
+    """After a call: the server's own count of the prompt (None if it gave none) against the estimate. A miss
+    over a quarter is logged on stderr, so you can see how far off the estimate is for your text. It is never
+    read as a sign the prompt was cut: a prompt Ollama cut counted LESS (Nexus, 20 Nov)."""
+    guessed = prompt_size(messages)
+    if counted is not None and abs(counted - guessed) * 4 > guessed:
+        side = "low: the length check may let through a prompt that doesn't fit" if counted > guessed else "high"
+        print(f"Note: {server} counted {counted:,} prompt tokens; Kindling estimated {guessed:,}, over a quarter "
+              f"{side}. This checks the estimate; it doesn't mean the prompt was cut.", file=sys.stderr)
 
 
 # --- Talking to a server -----------------------------------------------------------------------------
@@ -173,6 +199,16 @@ def reply_at(out, *path):
         raise ModelError(f"The model server's reply had no {'/'.join(map(str, path))}: {out!r:.200}") from None
 
 
+def whole_number_at(found, *path):
+    """found[path[0]][path[1]]..., if it is there and a whole number above 0; else None (it wasn't said)."""
+    try:
+        for step in path:
+            found = found[step]
+    except (LookupError, TypeError):
+        return None
+    return found if type(found) is int and found > 0 else None
+
+
 def key_for(name, usual, base_url):
     """Your key, from the environment variable named in "api_key_env". With no name, the usual variable is
     read only when "base_url" is blank (the provider's own address): a key never goes to a server you didn't
@@ -206,6 +242,9 @@ class Ollama:
         self.base_url = (base_url or "http://localhost:11434").rstrip("/")
         self.num_ctx = num_ctx    # Ollama's own default window is smaller than an 8,000-token recall pack
 
+    def window(self):
+        return self.num_ctx       # the window Kindling asks Ollama for
+
     def complete(self, messages):
         self.check_version()
         try:
@@ -215,8 +254,9 @@ class Ollama:
                 "options": {"num_ctx": self.num_ctx}})
         except ModelError as error:
             raise ollama_refusal(error) or error
-        used = out.get("prompt_eval_count") if isinstance(out, dict) else None
-        if isinstance(used, int) and used >= self.num_ctx * 0.95:   # it fit, leaving little room to answer
+        used = whole_number_at(out, "prompt_eval_count")
+        compare_count("Ollama", messages, used)
+        if used and used >= self.num_ctx * 0.95:          # it fit, leaving little room to answer
             print(f"WARNING: Ollama counted {used:,} prompt tokens in its {self.num_ctx:,}-token window: the "
                   "prompt left almost no room for the reply, which may stop short. End this session, or raise "
                   '"context_tokens" in agent.json.', file=sys.stderr)
@@ -248,11 +288,25 @@ class OpenAICompatible:
                              "local server, or put your OpenAI key in OPENAI_API_KEY.")
         self.model = model
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self.headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
+
+    def window(self):
+        """The server's window, where it says: vLLM lists each model's max_model_len on /v1/models, and
+        llama.cpp gives its n_ctx on /props, at its root. Each is asked once per run, and each is optional;
+        otherwise the usual 16,384, said once."""
+        listed = ask_once(f"{self.base_url}/models", self.headers)
+        entries = listed.get("data") if isinstance(listed, dict) else None
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, dict) and entry.get("id") == self.model and whole_number_at(entry, "max_model_len"):
+                return entry["max_model_len"]                                              # vLLM
+        props = ask_once(re.sub(r"/v1$", "", self.base_url) + "/props", self.headers)     # llama.cpp
+        return (whole_number_at(props, "n_ctx") or whole_number_at(props, "default_generation_settings", "n_ctx")
+                or assumed("openai"))
 
     def complete(self, messages):
-        headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
         out = fetch_json(f"{self.base_url}/chat/completions",
-                        {"model": self.model, "messages": messages}, headers)
+                         {"model": self.model, "messages": messages}, self.headers)
+        compare_count("The server", messages, whole_number_at(out, "usage", "prompt_tokens"))
         return reply_at(out, "choices", 0, "message", "content")
 
 
@@ -264,6 +318,14 @@ class Anthropic:
                              '"api_key_env" (ANTHROPIC_API_KEY when "base_url" is blank).')
         self.model = model or "claude-opus-5-5"
         self.base_url = (base_url or "https://api.anthropic.com").rstrip("/")
+        self.headers = {"x-api-key": self.key, "anthropic-version": "2026-10-21",
+                        "anthropic-beta": "server-side-fallback-2026-07-01"}       # for "fallbacks", below
+
+    def window(self):
+        """Anthropic says: GET /v1/models/{model} gives max_input_tokens, the model's context window. Asked
+        once per run, with the same headers as each message; otherwise the usual 1,000,000, said once."""
+        said = ask_once(f"{self.base_url}/v1/models/{urllib.parse.quote(self.model, safe='')}", self.headers)
+        return whole_number_at(said, "max_input_tokens") or assumed("anthropic")
 
     def complete(self, messages):
         system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
@@ -274,11 +336,10 @@ class Anthropic:
                         # the usual ceiling for a request that isn't streamed.
                         # "fallbacks": if a safety check declines a harmless message, Anthropic retries it
                         # on the model it recommends instead of failing. Delete it and the beta header
-                        # if your model or provider doesn't accept them.
+                        # (self.headers) if your model or provider doesn't accept them.
                         {"model": self.model, "max_tokens": 16000, "system": system, "messages": rest,
-                         "fallbacks": "default"},
-                        {"x-api-key": self.key, "anthropic-version": "2026-10-21",
-                         "anthropic-beta": "server-side-fallback-2026-07-01"})
+                         "fallbacks": "default"}, self.headers)
+        compare_count("Anthropic", messages, whole_number_at(out, "usage", "input_tokens"))
         if isinstance(out, dict) and out.get("stop_reason") == "refusal":     # declined: there's no reply
             return "(The model declined to answer this message.)"
         blocks = out.get("content") if isinstance(out, dict) else None

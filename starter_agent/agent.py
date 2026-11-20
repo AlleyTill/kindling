@@ -53,7 +53,7 @@ class Agent:
         """RECALL in the room the model's context leaves (Nexus): the budget is the smaller of
         recall_budget_tokens and context - this prompt without recall - room for the answer. With under
         about 1,000 tokens of room, recall is skipped, and you and the model are told."""
-        context = context_of(self.config)
+        context = context_of(self.config, self.model)
         room = context - estimate_tokens("".join(m["content"] for m in bare)) - max(context // 4, 1024)
         if room < 1000:
             self.notes.append(f"recall skipped: this session leaves ~{max(room, 0):,} tokens of the model's "
@@ -83,7 +83,7 @@ class Agent:
 
             # ACT: one call, refused before it's sent if it can't fit the model's context.
             messages = bdi.act_messages(pack.text, beliefs, intention, this)
-            check_fits(messages, context_of(self.config))
+            check_fits(messages, context_of(self.config, self.model))
             reply, changes = split_json(clean(text_of(self.model.complete(messages))))
 
             # RECORD: the reply and its changes together, only while the session exists (you may have

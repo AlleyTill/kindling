@@ -73,7 +73,7 @@ def run(store, model, embedder, config, session_id):
     if mine:
         messages = [{"role": "system", "content": SYSTEM},
                     {"role": "user", "content": "\n".join(turn_line(t) for t in mine)}]
-        check_fits(messages, context_of(config))
+        check_fits(messages, context_of(config, model))
         raw = text_of(model.complete(messages))
     with store.transaction():
         if store.session(session_id) is None:

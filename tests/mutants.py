@@ -314,7 +314,7 @@ MUTANTS = [
     ("under 1,000 tokens of room, recall is skipped", "starter_agent/agent.py", [(
         "        if room < 1000:", "        if room < 0:")]),
     ("a prompt too long for the context is refused, not sent", "starter_agent/agent.py", [(
-        "            check_fits(messages, context_of(self.config))\n", "")]),
+        "            check_fits(messages, context_of(self.config, self.model))\n", "")]),
     ("the length check leaves a quarter to spare", "starter_agent/models.py", [(
         "if size * 5 // 4 > context:", "if size > context:")]),
     ("one context number for Ollama's request and the budget", "starter_agent/models.py", [(
@@ -437,6 +437,39 @@ MUTANTS = [
         "        elif parts < OLLAMA_TESTED:", "        elif False:")]),
     ("an Ollama whose version can't be read is named", "starter_agent/models.py", [(
         "        if not parts:\n", "        if False:\n")]),
+    ("vLLM's max_model_len is the window", "starter_agent/models.py", [(
+        'entry.get("id") == self.model and whole_number_at(entry, "max_model_len"):', "False:")]),
+    ("vLLM: the entry for this model, not another's", "starter_agent/models.py", [(
+        'entry.get("id") == self.model and whole_number_at', "whole_number_at")]),
+    ("llama.cpp's n_ctx is the window", "starter_agent/models.py", [(
+        'whole_number_at(props, "n_ctx") or whole_number_at(props, "default_generation_settings", "n_ctx")', "None")]),
+    ("llama.cpp's n_ctx under default_generation_settings counts too", "starter_agent/models.py", [(
+        ' or whole_number_at(props, "default_generation_settings", "n_ctx")', "")]),
+    ("Anthropic's max_input_tokens is the window", "starter_agent/models.py", [(
+        'return whole_number_at(said, "max_input_tokens") or assumed("anthropic")', 'return assumed("anthropic")')]),
+    ("Anthropic is asked with the same headers as a message", "starter_agent/models.py", [(
+        "{urllib.parse.quote(self.model, safe='')}\", self.headers)", "{urllib.parse.quote(self.model, safe='')}\")")]),
+    ("the server's window is the one the length check and recall use", "starter_agent/models.py", [(
+        '    window = getattr(model, "window", None)', "    window = None")]),
+    ("context_tokens in agent.json always wins", "starter_agent/models.py", [(
+        "    if config.context_tokens:\n        return config.context_tokens\n",
+        '    if config.context_tokens and not hasattr(model, "window"):\n        return config.context_tokens\n')]),
+    ("a server that can't say: the usual window, and you're told", "starter_agent/models.py", [(
+        "    note_once(f\"Note: the server didn't say", "    (f\"Note: the server didn't say")]),
+    ("the after-call compare never raises, whatever the count", "starter_agent/models.py", [(
+        "    return found if type(found) is int and found > 0 else None", "    return found")]),
+    ("the after-call compare never raises, whatever the reply's shape", "starter_agent/models.py", [(
+        "    except (LookupError, TypeError):\n        return None", "    except LookupError:\n        return None")]),
+    ("an estimate missed by over a quarter is logged", "starter_agent/models.py", [(
+        "abs(counted - guessed) * 4 > guessed", "abs(counted - guessed) > guessed * 4")]),
+    ("an estimate within a quarter isn't logged", "starter_agent/models.py", [(
+        "abs(counted - guessed) * 4 > guessed", "abs(counted - guessed) * 40 > guessed")]),
+    ("Ollama's count is compared after each call", "starter_agent/models.py", [(
+        '        compare_count("Ollama", messages, used)\n', "")]),
+    ("an OpenAI-compatible server's count is compared after each call", "starter_agent/models.py", [(
+        '        compare_count("The server", messages, whole_number_at(out, "usage", "prompt_tokens"))\n', "")]),
+    ("Anthropic's count is compared after each call", "starter_agent/models.py", [(
+        '        compare_count("Anthropic", messages, whole_number_at(out, "usage", "input_tokens"))\n', "")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),
