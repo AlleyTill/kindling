@@ -18,7 +18,7 @@ The licence's AI-welfare terms are written for persistent agents. As shipped, Ki
 delete` is you removing your own data. If you grow it into a long-running agent, read those terms first: they're
 part of what you're building toward.
 
-It's deliberately small (about 1,900 lines of Python, standard library only) so you can read all of it in
+It's deliberately small (about 2,000 lines of Python, standard library only) so you can read all of it in
 an afternoon and change any of it.
 
 ## The loop
@@ -246,7 +246,9 @@ on text built to defeat it.
 
 Before anything is sent, the whole prompt is checked against the context with a quarter to spare, and one
 too long is refused with a message. Ollama is also asked to refuse one itself (`"truncate": false`), and its
-refusal comes back as the same message, with Ollama's own count. **So a prompt is never cut in silence on
+refusal comes back as the same message, with Ollama's own count; so does the same refusal from an
+OpenAI-compatible server (llama.cpp's, say), and curiosity then skips that session rather than stopping
+there. **So a prompt is never cut in silence on
 Ollama 0.32.1 or later, or on a server that reports its window** (unless you set `context_tokens` above it).
 Elsewhere it can be: an older Ollama may ignore `"truncate": false`, and a server that doesn't report its
 window may have a smaller one than Kindling assumes; either may cut a long prompt without saying so.
