@@ -424,14 +424,15 @@ MUTANTS = [
         '                "truncate": False,              # too long for the window: refused (HTTP 400), never cut\n',
         "")]),
     ("Ollama's 400 for a prompt too long is PromptTooLong", "starter_agent/models.py", [(
-        "            raise ollama_refusal(error) or error", "            raise error")]),
+        "            raise refusal(\"Ollama\", error, 'raise \"context_tokens\" in agent.json') or error",
+        "            raise error")]),
     ("that PromptTooLong quotes Ollama's own count", "starter_agent/models.py", [(
-        """f"{said['n_prompt_tokens']} tokens by its own count, for its {said['n_ctx']}-token window" if counted""",
-        '"a prompt too long" if counted')]),
+        """f"{counts['n_prompt_tokens']} tokens by its own count, for its {counts['n_ctx']}-token window" if counts""",
+        '"a prompt too long" if counts')]),
     ("only a 400 is read as Ollama's refusal", "starter_agent/models.py", [(
         "if error.status != 400 or not (", "if not (")]),
     ("Ollama's error type alone is enough", "starter_agent/models.py", [(
-        'not (counted or "exceed_context_size_error" in error.said)', "not counted")]),
+        'not (counts or "exceed_context_size_error" in error.said)', "not counts")]),
     ("a server is asked about itself once per run", "starter_agent/models.py", [(
         "    if url not in ASKED:", "    if True:")]),
     ("a note is printed once per run", "starter_agent/models.py", [("    if key not in TOLD:", "    if True:")]),
@@ -525,6 +526,12 @@ MUTANTS = [
         '            store.log(session_id, "count", count)\n', "            pass\n")]),
     ("a count is logged once, not again with the next call's", "starter_agent/models.py", [(
         "    COUNTS.clear()\n", "")]),
+    # --- Round 5: an OpenAI-compatible server's refusal is PromptTooLong too (r4 verifier's LOW) ---------
+    ("an OpenAI-compatible server's too-long 400 is PromptTooLong", "starter_agent/models.py", [(
+        '            raise refusal("The server", error, "start the server with a bigger window") or error',
+        "            raise error")]),
+    ("llama.cpp's count, under \"error\", is quoted", "starter_agent/models.py", [(
+        "for found in (said, nested) if", "for found in (said,) if")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

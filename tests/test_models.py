@@ -45,7 +45,7 @@ class Answer(BytesIO):
 def wire(monkeypatch):
     """Stands in for every server at urllib's own door, so no request leaves this computer. Each POST is
     recorded in .sent as (url, body, headers) and answered with .reply, or refused with .refusal = (HTTP
-    status, body). Each GET is recorded in .asked as (url, headers) and answered with .facts[url] (raised, if
+    status, body), or by .refusal(body) when it is a function (None: not refused). Each GET is recorded in .asked as (url, headers) and answered with .facts[url] (raised, if
     it is an exception), or with HTTP 404 if there's none. Every method is recorded in .methods, read from
     the request itself: a GET carries no body and a POST always does. Header names are lower case."""
     line = SimpleNamespace(reply=None, refusal=None, facts={}, sent=[], asked=[], methods=[])
@@ -64,8 +64,9 @@ def wire(monkeypatch):
             return Answer(json.dumps(line.facts[url]).encode())
         assert method == "POST" and request.data is not None, f"a {method} with no body: {url}"
         line.sent.append((url, json.loads(request.data), headers))
-        if line.refusal:
-            status, body = line.refusal
+        refused = line.refusal(line.sent[-1][1]) if callable(line.refusal) else line.refusal
+        if refused:
+            status, body = refused
             raise urllib.error.HTTPError(url, status, "Refused", {}, BytesIO(json.dumps(body).encode()))
         return Answer(json.dumps(line.reply).encode())
     monkeypatch.setattr("urllib.request.OpenerDirector.open", open_)
@@ -407,6 +408,47 @@ def test_the_after_call_compare_never_raises_whatever_the_usage(wire, monkeypatc
         model = backend(wire, monkeypatch, name)
         wire.reply = {**COUNTED[name](1000), "usage": usage}
         assert outcome(model.complete, PROSE) == "ok", (name, path)
+
+
+# --- An OpenAI-compatible server's refusal of a prompt too long is PromptTooLong too (r4 verifier's LOW) ------
+
+LLAMA_TOO_LONG = {"error": {"code": 400, "message": "the request exceeds the available context size, try increasing "
+                            "it", "type": "exceed_context_size_error", "n_prompt_tokens": 5120, "n_ctx": 4096}}
+
+
+@pytest.mark.parametrize("body, quoted", [
+    (LLAMA_TOO_LONG, "5120 tokens by its own count, for its 4096-token window"),          # llama.cpp: under "error"
+    (TOO_LONG, "1757 tokens by its own count, for its 256-token window"),                 # Ollama's, passed on by /v1
+    ({"error": {"type": "exceed_context_size_error", "message": "too long"}}, "exceed_context_size_error")],
+    ids=["llama.cpp", "Ollama's /v1", "the error type alone"])
+def test_an_openai_compatible_servers_400_for_a_prompt_too_long_is_prompt_too_long(wire, body, quoted):
+    wire.refusal = (400, body)
+    error = outcome(OpenAICompatible("m", VLLM).complete, MESSAGES)
+    assert isinstance(error, PromptTooLong) and quoted in str(error), error
+    assert str(error).startswith("The server refused the prompt as too long") and "bigger window" in str(error)
+
+
+@pytest.mark.parametrize("status, body", [
+    (400, {"object": "error", "message": "This model's maximum context length is 4096 tokens.", "code": 400}),
+    (500, LLAMA_TOO_LONG)])
+def test_any_other_openai_compatible_refusal_stays_a_plain_model_error(wire, status, body):
+    wire.refusal = (status, body)
+    error = outcome(OpenAICompatible("m", VLLM).complete, MESSAGES)
+    assert isinstance(error, ModelError) and not isinstance(error, PromptTooLong), error
+
+
+def test_a_servers_refusal_during_curiosity_skips_that_session_and_reads_the_rest(wire, tmp_path):
+    """Before, llama.cpp's refusal was a plain error: curiosity stopped there, left every later session unread,
+    and stopped there again at each session end."""
+    agent = openai_agent(wire, tmp_path, {}, context_tokens=4096)
+    add_session(agent.store, [("user", "go"), ("agent", "the long one")])
+    small, _ = add_session(agent.store, [("user", "hi"), ("agent", "why is the sky blue?")])
+    wire.refusal = lambda body: (400, LLAMA_TOO_LONG) if "the long one" in body["messages"][-1]["content"] else None
+    wire.reply = {"choices": [{"message": {"content": '{"questions": []}'}}]}
+    agent.end_session()
+    read = [body["messages"][-1]["content"] for _, body, _ in wire.sent]
+    assert len(read) == 2 and "why is the sky blue?" in read[1], read          # the next session was still read
+    assert small not in [s["id"] for s in agent.store.unread_sessions()]
 
 
 def test_openai_compatible_request_and_reply(wire, monkeypatch):

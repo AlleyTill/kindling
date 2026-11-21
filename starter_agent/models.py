@@ -252,18 +252,22 @@ def key_for(name, usual, base_url):
 OLLAMA_TESTED = (0, 32, 1)       # the Ollama that "truncate": false was tested on (Nexus, 20 Nov 2026)
 
 
-def ollama_refusal(error):
-    """Ollama's refusal of a prompt longer than its window (HTTP 400, because Kindling sends "truncate":
-    false), as PromptTooLong quoting Ollama's own count. None for any other error."""
+def refusal(server, error, bigger):
+    """A server's refusal of a prompt longer than its window, as PromptTooLong quoting the server's own count;
+    None for any other error. Ollama refuses because Kindling asks it to ("truncate": false); llama.cpp's own
+    server refuses one too, with the numbers under "error". It is one only if it is an HTTP 400 that names
+    exceed_context_size_error or gives both counts (n_prompt_tokens and n_ctx). `bigger`: how to give the
+    model a bigger window."""
     said = parse_json(error.said)
     said = said if isinstance(said, dict) else {}
-    counted = {"n_prompt_tokens", "n_ctx"} <= said.keys()
-    if error.status != 400 or not (counted or "exceed_context_size_error" in error.said):
+    nested = said["error"] if isinstance(said.get("error"), dict) else {}
+    counts = next((found for found in (said, nested) if {"n_prompt_tokens", "n_ctx"} <= found.keys()), None)
+    if error.status != 400 or not (counts or "exceed_context_size_error" in error.said):
         return None
-    what = (f"{said['n_prompt_tokens']} tokens by its own count, for its {said['n_ctx']}-token window" if counted
+    what = (f"{counts['n_prompt_tokens']} tokens by its own count, for its {counts['n_ctx']}-token window" if counts
             else error.said[:300])
-    return PromptTooLong(f"Ollama refused the prompt as too long: {what}. Nothing was cut or answered. End this "
-                         'session (/end, or `session end`), or raise "context_tokens" in agent.json')
+    return PromptTooLong(f"{server} refused the prompt as too long: {what}. Nothing was cut or answered. End this "
+                         f"session (/end, or `session end`), or {bigger}")
 
 
 class Ollama:
@@ -283,7 +287,7 @@ class Ollama:
                 "truncate": False,              # too long for the window: refused (HTTP 400), never cut
                 "options": {"num_ctx": self.num_ctx}})
         except ModelError as error:
-            raise ollama_refusal(error) or error
+            raise refusal("Ollama", error, 'raise "context_tokens" in agent.json') or error
         used = whole_number_at(out, "prompt_eval_count")
         compare_count("Ollama", messages, used)
         if used and used >= self.num_ctx * 0.95:          # it fit, leaving little room to answer
@@ -335,8 +339,11 @@ class OpenAICompatible:
                 or assumed("openai"))
 
     def complete(self, messages):
-        out = fetch_json(f"{self.base_url}/chat/completions",
-                         {"model": self.model, "messages": messages}, self.headers)
+        try:
+            out = fetch_json(f"{self.base_url}/chat/completions",
+                             {"model": self.model, "messages": messages}, self.headers)
+        except ModelError as error:
+            raise refusal("The server", error, "start the server with a bigger window") or error
         compare_count("The server", messages, whole_number_at(out, "usage", "prompt_tokens"))
         return reply_at(out, "choices", 0, "message", "content")
 
