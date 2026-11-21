@@ -286,7 +286,12 @@ OLLAMA_TESTED = (0, 32, 1)       # the Ollama that "truncate": false was tested 
 
 # vLLM's words for a prompt too long: "This model's maximum context length is N tokens. However, you requested
 # M tokens ..." (newer: "... your request has M input tokens"), at the top level or under "error".
-VLLM_TOO_LONG = re.compile(r"maximum context length is (\d+) tokens\b.*?(?:you requested|your request has) (\d+)", re.S)
+VLLM_TOO_LONG = re.compile(r"maximum context length is (\d+) tokens\b.*?(?:you requested|your request has) (\d+)",
+                           re.S)
+# How far into a server's error body a pattern looks: a refusal says its words first, and VLLM_TOO_LONG run over
+# a whole body (fetch_json reads all of it) is slow on one built for that: 23.7 s at 140 KB, over 120 s at 280 KB
+# (r6 verifier, measured 21 Nov). On the first 2,000 characters of the same body it took 2 ms.
+SEARCHED = 2000
 
 
 def refusal(server, error, bigger):
@@ -294,12 +299,13 @@ def refusal(server, error, bigger):
     None for any other error. Ollama refuses because Kindling asks it to ("truncate": false); llama.cpp's own
     server refuses one too, with the numbers under "error"; vLLM says it in words (VLLM_TOO_LONG). It is one
     only if it is an HTTP 400 that names exceed_context_size_error, gives both counts (n_prompt_tokens and
-    n_ctx), or says vLLM's words with both numbers. `bigger`: how to give the model a bigger window."""
+    n_ctx), or says vLLM's words with both numbers in its first SEARCHED characters. `bigger`: how to give the
+    model a bigger window."""
     said = parse_json(error.said)
     said = said if isinstance(said, dict) else {}
     nested = said["error"] if isinstance(said.get("error"), dict) else {}
     counts = next((found for found in (said, nested) if {"n_prompt_tokens", "n_ctx"} <= found.keys()), None)
-    vllm = VLLM_TOO_LONG.search(error.said)
+    vllm = VLLM_TOO_LONG.search(error.said[:SEARCHED])
     if error.status != 400 or not (counts or vllm or "exceed_context_size_error" in error.said):
         return None
     what = (f"{counts['n_prompt_tokens']} tokens by its own count, for its {counts['n_ctx']}-token window" if counts

@@ -2,9 +2,11 @@
 how the agent reads what a model wrote. A fake urlopen stands in for every server; no request leaves."""
 import json
 import re
+import signal
 import socket
 import time
 import urllib.error
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -967,6 +969,56 @@ def test_the_readmes_quarter_sentence_is_what_the_code_does(wire, tmp_path):
     size, room = sent_last(wire)
     assert prompt - 3 <= size <= prompt and room >= answer, (size, room)
     assert answer == max(window // 4, 1024) and prompt == share_of(window)
+
+
+# --- Round 7: an error body is searched only so far (r6 verifier's LOW) ----------------------------------------
+
+@contextmanager
+def under_a_second():
+    """Fail the test if the block takes a second or more. Where the system has a timer signal it is stopped at one
+    second, by pytest.fail (a regular expression checks for signals as it runs), so a slow mutant fails fast."""
+    timer = hasattr(signal, "setitimer")
+    if timer:
+        def stop(*_):
+            pytest.fail("it took a second or more")
+        before = signal.signal(signal.SIGALRM, stop)
+        signal.setitimer(signal.ITIMER_REAL, 1.0)
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        if timer:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, before)
+    assert time.perf_counter() - start < 1
+
+
+HOSTILE = {"object": "error", "message": "maximum context length is 1 tokens " * 8000}      # 280 KB
+
+
+@pytest.mark.parametrize("backend", ["ollama", "openai"])
+def test_a_280_kb_hostile_error_body_is_read_in_under_a_second(wire, monkeypatch, backend):
+    """The r6 verifier's LOW: VLLM_TOO_LONG over the whole of a 280 KB body like this one was still running at 120 s
+    (its lazy gap after a literal prefix is quadratic). Now it searches only the body's first 2,000 characters.
+    The opener is a bare one here, so the second timed is the body's: a real opener loads the system's
+    certificates each request (about 150 ms of CPU each, measured here, 21 Nov), which under load ran past it."""
+    assert len(json.dumps(HOSTILE)) >= 280_000
+    monkeypatch.setattr(models.urllib.request, "build_opener", lambda *handlers: models.urllib.request.OpenerDirector())
+    wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+    wire.refusal = (400, HOSTILE)
+    model = Ollama() if backend == "ollama" else OpenAICompatible("m", VLLM)
+    with under_a_second():
+        error = outcome(model.complete, MESSAGES)
+    assert isinstance(error, ModelError) and not isinstance(error, PromptTooLong), error
+
+
+def test_vllms_words_are_looked_for_only_in_the_first_2000_characters_of_the_body(wire):
+    wire.refusal = (400, {"object": "error", "detail": "x" * 2000, "message": VLLM_SAID})     # its words come late
+    error = outcome(OpenAICompatible("m", VLLM).complete, MESSAGES)
+    assert isinstance(error, ModelError) and not isinstance(error, PromptTooLong), error
+    wire.refusal = (400, {**VLLM_TOO_LONG, "detail": "x" * 300_000})       # the usual refusal, in a long body
+    error = outcome(OpenAICompatible("m", VLLM).complete, MESSAGES)
+    assert isinstance(error, PromptTooLong) and "5000 tokens by its own count, for its 4096-token window" in str(error)
 
 
 # --- Round 7: the round-6 verifier's two surviving mutants, each now with a test ------------------------------

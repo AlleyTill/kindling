@@ -647,6 +647,9 @@ MUTANTS = [
         "        room = context - max(context // 4, 1024) - prompt_size(bare)")]),
     ("the README's quarter sentence is what the code does", "README.md", [(
         "recall fills the prompt to at most 2,457 tokens", "recall fills the prompt to at most 3,072 tokens")]),
+    # --- Round 7: an error body is searched only so far (r6 verifier's LOW) -----------------------------------
+    ("vLLM's words are looked for only in an error body's first 2,000 characters", "starter_agent/models.py", [(
+        "VLLM_TOO_LONG.search(error.said[:SEARCHED])", "VLLM_TOO_LONG.search(error.said)")]),
     # --- Round 7: the round-6 verifier's two surviving mutants, each now with a test --------------------------
     ("R3 curiosity asks no server for a session with no agent turn", "starter_agent/curiosity.py", [(
         "if mine and reported_window(config, model)", "if reported_window(config, model)")]),
