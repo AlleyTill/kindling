@@ -44,3 +44,12 @@ def test_only_a_test_failing_counts_as_a_kill():
     assert judge("AssertionError", "/w/mutant_01/starter_agent/store.py") == "INVALID"  # an assert in the package
     assert judge("KeyError", "/w/mutant_01/starter_agent/bdi.py") == "INVALID"          # a crash
     assert mutants.verdict({"exit": 0, "ran": 9, "failed": []})[0] == "SURVIVED"
+
+
+def test_a_mutant_in_the_readme_is_planted_as_text(tmp_path):
+    """Round 7: the README's numbers are checked against the code, so a README mutant must be planted, not refused."""
+    (tmp_path / "snapshot").mkdir()
+    (tmp_path / "snapshot" / "README.md").write_text("In a 4,096-token window, at most 2,457 tokens.\n")
+    folder, problem = mutants.mutate(tmp_path / "snapshot", 1, "README.md", [("2,457", "3,072")])
+    assert problem is None, problem
+    assert (folder / "README.md").read_text() == "In a 4,096-token window, at most 3,072 tokens.\n"

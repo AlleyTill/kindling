@@ -656,6 +656,8 @@ MUTANTS = [
         '        compile(text, ' 'file, "exec")', "        pass")]),                                   # split: not this line
     ("a crash in the package isn't a kill", "tests/mutants.py", [(
         'kind == "AssertionError" and Path(where)' '.parent.name == "tests"', 'kind == "AssertionError"')]),
+    ("a README mutant is planted as text, not refused as invalid Python", "tests/mutants.py", [(
+        "        if file.endswith(" '".py"):', "        if True:")]),                                   # split: not this line
 ]
 
 CODE = ("starter_agent", "tests", "pytest.ini", "README.md")      # what a mutant run needs, and nothing else
@@ -709,7 +711,8 @@ def mutate(frozen, number, file, swaps):
             return None, f"the text to replace occurs {text.count(old)} times in {file}"
         text = text.replace(old, new)
     try:
-        compile(text, file, "exec")
+        if file.endswith(".py"):                   # a README mutant is text
+            compile(text, file, "exec")
     except SyntaxError as error:                   # a broken mutant would prove nothing
         return None, f"the mutant isn't valid Python ({error.msg}, line {error.lineno})"
     path.write_text(text)
