@@ -83,6 +83,14 @@ def context_of(config, model=None):
     return (window() if window else None) or CONTEXT.get(config.backend, 12288)
 
 
+def reported_window(config, model):
+    """True when the window in use is the one the model's server said it has (not agent.json's, not the one
+    Kindling asks Ollama for, not one it assumed): then raising context_tokens past it is wrong advice, and a
+    bigger window has to start at the server."""
+    reported = getattr(model, "reported", None)
+    return not config.context_tokens and bool(reported and reported())
+
+
 def assumed(backend):
     """The backend's usual window, for a server that didn't say what its window is. Said once per run, and
     kept as a risk of a cut: the server's real window may be smaller."""
@@ -128,14 +136,16 @@ def answer_room(window, messages):
     return max(window - (prompt_size(messages) * 5 + 3) // 4, 1)
 
 
-def compare_count(server, messages, counted):
+def compare_count(server, messages, counted, cuts=True):
     """After a call: the server's own count of the prompt (None if it gave none) against the estimate.
     - Over it by more than a quarter, the estimate undercounted: the side that can let a prompt too long for
       the window through. That is printed, each time.
     - Under it by more than a quarter is usual with Ollama's prompt cache (it counts only what it didn't
       reuse), but it is also what a cut looks like: a prompt Ollama cut counted about half its window (Nexus,
       20 Nov). So it goes in the log only (take_counts), unless this run has a known risk of a cut (an
-      assumed window, an Ollama older than 0.32.1): then it is also printed, once, as a possible cut."""
+      assumed window; an Ollama older than 0.32.1, or whose version can't be read): then it is also printed,
+      once, as a possible cut. Never for a server that refuses a prompt too long and never cuts one (cuts=False:
+      Anthropic)."""
     guessed = prompt_size(messages)
     if counted is None or abs(counted - guessed) * 4 <= guessed:
         return
@@ -145,7 +155,7 @@ def compare_count(server, messages, counted):
               "let through a prompt too long for the window.", file=sys.stderr)
         return
     COUNTS.append(f"{said}, over a quarter fewer")
-    if RISKS:
+    if RISKS and cuts:
         note_once(f"Note: {said}, over a quarter fewer, which can mean it cut the prompt without saying so. "
                   + ". ".join(RISKS) + ".", key="possible cut")
 
@@ -334,7 +344,8 @@ class Ollama:
 
     def check_version(self):
         """Once per process: say plainly if this Ollama is older than the one "truncate": false was tested on
-        (0.32.1), or won't say which it is. An older one may ignore the field and cut a long prompt."""
+        (0.32.1), or won't say which it is. An older one may ignore the field and cut a long prompt, so either
+        is kept as a risk of a cut (one that won't say counts as one: the safe side)."""
         said = ask_once(f"{self.base_url}/api/version")
         version = said.get("version") if isinstance(said, dict) else None
         parts = tuple(int(n) for n in re.findall(r"\d+", version)[:3]) if isinstance(version, str) else ()
@@ -343,6 +354,8 @@ class Ollama:
         if not parts:
             note_once(f"Note: Kindling couldn't read this Ollama's version (it was tested with 0.32.1). An older "
                       f"Ollama {risk}")
+            at_risk("Kindling couldn't read this Ollama's version, and one older than 0.32.1 may ignore "
+                    '"truncate": false: check it (`ollama --version`), and update it if it is older')
         elif parts < OLLAMA_TESTED:
             note_once(f"WARNING: this Ollama is {version}, older than 0.32.1, the version Kindling was tested "
                       f"with. It {risk}")
@@ -430,12 +443,16 @@ class Anthropic:
                         "anthropic-beta": "server-side-fallback-2026-07-01"}       # for "fallbacks", below
 
     def window(self):
-        """Anthropic says: GET /v1/models/{model} gives max_input_tokens, the model's context window. Asked
-        once per run, with a message's key and version but not its beta header, which is for "fallbacks" on
-        a message; otherwise the usual 1,000,000, said once."""
+        """The model's window, where Anthropic says; otherwise the usual 1,000,000, said once."""
+        return self.reported() or assumed("anthropic")
+
+    def reported(self):
+        """Anthropic says: GET /v1/models/{model} gives max_input_tokens, the model's context window (None if it
+        can't say). Asked once per run, with a message's key and version but not its beta header, which is for
+        "fallbacks" on a message."""
         asked = {name: value for name, value in self.headers.items() if name != "anthropic-beta"}
         said = ask_once(f"{self.base_url}/v1/models/{urllib.parse.quote(self.model, safe='')}", asked)
-        return whole_number_at(said, "max_input_tokens") or assumed("anthropic")
+        return whole_number_at(said, "max_input_tokens")
 
     def complete(self, messages):
         system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
@@ -449,9 +466,13 @@ class Anthropic:
                         # (self.headers) if your model or provider doesn't accept them.
                         {"model": self.model, "max_tokens": MOST_ANSWER, "system": system, "messages": rest,
                          "fallbacks": "default"}, self.headers)
-        compare_count("Anthropic", messages, whole_number_at(out, "usage", "input_tokens"))
+        # Anthropic refuses a prompt too long for the window (HTTP 400) and never cuts one: no possible-cut note.
+        compare_count("Anthropic", messages, whole_number_at(out, "usage", "input_tokens"), cuts=False)
         if isinstance(out, dict) and out.get("stop_reason") == "refusal":     # declined: there's no reply
             return "(The model declined to answer this message.)"
+        if value_at(out, "stop_reason") == "max_tokens":
+            stopped_short(f"{MOST_ANSWER:,} tokens, the most Kindling asks Anthropic for, thinking included",
+                          "Ask for a shorter answer (MOST_ANSWER in models.py sets this limit)")
         blocks = out.get("content") if isinstance(out, dict) else None
         if not isinstance(blocks, list):
             raise ModelError(f"The model server's reply had no content: {out!r:.200}")

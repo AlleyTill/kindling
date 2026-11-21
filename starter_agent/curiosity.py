@@ -5,9 +5,10 @@
   session end tries again (Agent.end_session).
 - A session too long for one call (Lyra's rule, 20 Nov): its NEWEST agent turns that fit are read, as one
   unbroken block, never turns stitched together from different places. The log records the turns read
-  and skipped, you get one note ("read turns k-n of m; raise context_tokens to read all"), and the
-  session is marked read, so nothing repeats at later session ends. If the server refuses even that
-  block as too long, no turn is read, and that is logged and said the same way.
+  and skipped, you get one note ("read turns k-n of m; raise context_tokens to read all", or "start the
+  server with a bigger window" where the server reported its window), and the session is marked read, so
+  nothing repeats at later session ends. If the server refuses even that block as too long, no turn is
+  read, and that is logged and said the same way.
 - Every question must quote 2 to 20 whole words found word for word in the agent turn it cites, or
   it is dropped.
 - A question too close (similarity 0.85) to an open OR dropped one is skipped. With the default hash
@@ -22,8 +23,8 @@ import re
 
 from . import bdi
 from .embed import cosine
-from .models import (PromptTooLong, check_fits, context_of, estimate_tokens, one_line, parse_json, split_json,
-                     take_counts, text_of)
+from .models import (PromptTooLong, check_fits, context_of, estimate_tokens, one_line, parse_json, reported_window,
+                     split_json, take_counts, text_of)
 from .recall import turn_line
 
 SYSTEM = """You are reading your own turns from one finished session. List the questions you raised \
@@ -78,6 +79,9 @@ def run(store, model, embedder, config, session_id, notes=None):
     model was answering)."""
     mine = [t for t in store.turns(session_id) if t["role"] == "agent"]
     context = context_of(config, model) if mine else 0
+    # Past a window the server reported, raising context_tokens is wrong advice: the server needs a bigger one.
+    bigger = ("start the server with a bigger window" if mine and reported_window(config, model)
+              else "raise context_tokens")
     block = newest_that_fit(mine, context)
     raw = refused = None
     if block:
@@ -96,7 +100,7 @@ def run(store, model, embedder, config, session_id, notes=None):
             store.log(session_id, "count", count)
         read = [] if refused else block
         if len(read) < len(mine):
-            note = part_read(store, session_id, mine, block, refused)
+            note = part_read(store, session_id, mine, block, refused, bigger)
             if notes is not None:
                 notes.append(note)
         return queue(store, embedder, config, session_id, read, raw) if raw is not None else []
@@ -127,9 +131,10 @@ def newest_that_fit(mine, context):
     return block
 
 
-def part_read(store, session_id, mine, block, refused):
+def part_read(store, session_id, mine, block, refused, bigger="raise context_tokens"):
     """Log which of the session's agent turns were read and which skipped (by place, 1 to m, and by turn id),
-    and return the one note for you. `block`: the newest turns that fit, which the server may have refused."""
+    and return the one note for you. `block`: the newest turns that fit, which the server may have refused.
+    `bigger`: how to read them all."""
     m, k = len(mine), len(mine) - len(block) + 1
     if refused:
         reason = (f"read none of its {m} agent turns: the server refused turns {k}-{m} ({ids(block)}) as too "
@@ -139,12 +144,12 @@ def part_read(store, session_id, mine, block, refused):
     elif block:
         reason = (f"read agent turns {k}-{m} of {m} ({ids(block)}); skipped 1-{k - 1} ({ids(mine[:k - 1])}), "
                   "too long to read with them in one call")
-        note = f"curiosity, session {session_id}: read turns {k}-{m} of {m}; raise context_tokens to read all"
+        note = f"curiosity, session {session_id}: read turns {k}-{m} of {m}; {bigger} to read all"
     else:
         reason = (f"read none of its {m} agent turns: the newest alone is too long for one call; skipped "
                   f"1-{m} ({ids(mine)})")
-        note = (f"curiosity, session {session_id}: read no turns of {m} (the newest alone is too long); raise "
-                "context_tokens to read all")
+        note = (f"curiosity, session {session_id}: read no turns of {m} (the newest alone is too long); {bigger} "
+                "to read all")
     store.log(session_id, "curiosity read part", reason,
               json.dumps({"of": m, "read": [k, m] if block and not refused else None,
                           "skipped": [1, m if refused or not block else k - 1]}))

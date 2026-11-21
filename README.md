@@ -254,16 +254,17 @@ Ollama 0.32.1 or later, or on a server that reports its window** (unless you set
 Past the estimate's quarter margin (text in a script the tokenizer lacks, for example), a server with context
 shift on may cut a prompt instead of refusing it. Elsewhere it can be: an older Ollama may ignore
 `"truncate": false`, and a server that doesn't report its window may have a smaller one than Kindling
-assumes; either may cut a long prompt without saying so. Kindling tells you when the Ollama is older, and
-when it is assuming a window.
+assumes; either may cut a long prompt without saying so. Kindling tells you when the Ollama is older or
+won't say its version, and when it is assuming a window.
 
 After each reply, the server's own count of the prompt (Ollama, OpenAI-compatible and Anthropic replies carry
 one) is compared with the estimate. A count over a quarter *above* it is printed: the estimate undercounted
 your text, so the length check may let through a prompt that doesn't fit. A count over a quarter *below* it
 goes in the log (`log`) only. Ollama's prompt cache makes that usual, since it counts only what it didn't
 reuse, but a cut looks the same: Nexus found that a prompt Ollama cut counts about half the window. So where
-a cut is possible (an assumed window, or an Ollama older than 0.32.1), it is also printed, once, as a
-possible cut. And a count near Ollama's window warns you that the prompt left almost no room for the reply.
+a cut is possible (an assumed window, or an Ollama older than 0.32.1 or whose version Kindling can't read),
+it is also printed, once, as a possible cut; never for Anthropic, which refuses a prompt too long rather than
+cutting it. And a count near Ollama's window warns you that the prompt left almost no room for the reply.
 
 **Only a server that shifts gets a limit on the answer.** Nexus found that an answer which outgrows the
 window makes Ollama shift the start of the prompt (the instructions) out of it mid-answer, saying nothing;
@@ -278,8 +279,9 @@ limit, because there one does harm: vLLM refuses a request whose prompt plus lim
 Ollama reached through its OpenAI-compatible address (`/v1`) can't be told apart, so it gets no limit there:
 use the `ollama` backend. To know which server it's talking to, Kindling asks an OpenAI-compatible server
 once per run, even with `context_tokens` set. When any server stops an answer at its own limit, Kindling says
-so. Ollama can also be told not to shift (`"shift": false`), but "shift" is a load-time setting, so a shared
-Ollama reloads if callers differ.
+so. Anthropic's API needs a limit on every request, so Kindling asks it for at most 16,000 tokens (thinking
+included), and says so when a reply stops there. Ollama can also be told not to shift (`"shift": false`),
+but "shift" is a load-time setting, so a shared Ollama reloads if callers differ.
 
 A session is never cut in half, so a session bigger than the budget is never recalled, and a 30-turn day
 with real replies can be that big. **`chat` and `recall` name a session when its size, not its rank, kept it
@@ -308,8 +310,9 @@ In this order: `agent.py` (the loop, about 140 lines), `recall.py`, `bdi.py`, `c
   questions it raised and didn't answer. If that call fails, the session stays unread and the next session
   end tries again. A session too long to read in one call is read in part (Lyra's rule): its newest agent
   turns that fit, as one block, never turns stitched together from different places. The log records the
-  turns read and skipped, you're told once ("read turns k-n of m; raise context_tokens to read all"), and
-  the session counts as read, so nothing repeats. Each question must quote 2 to 20 of the agent's words
+  turns read and skipped, you're told once ("read turns k-n of m; raise context_tokens to read all", or
+  "start the server with a bigger window" where the server reported its window), and the session counts as
+  read, so nothing repeats. Each question must quote 2 to 20 of the agent's words
   exactly, from a turn that was read, or it's dropped: the quote shows where in the agent's words it came
   from, so check that it really asks that. Words are counted by spaces, so in a language written without them (Chinese, Japanese, Thai) no
   question passes yet. It never searches outside and never talks to you on its own.

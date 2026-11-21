@@ -378,17 +378,23 @@ def test_a_count_far_over_the_estimate_is_printed_each_time_not_once_per_run(wir
     assert err.count("over a quarter more") == 3 and err.count("counted 1,300 prompt tokens") == 2, err
 
 
-@pytest.mark.parametrize("risk", ["an assumed window", "an Ollama older than 0.32.1"])
+@pytest.mark.parametrize("risk, said", [
+    ("an assumed window", "Kindling had to assume this server's window: set context_tokens in agent.json to its real one"),
+    ("an Ollama older than 0.32.1", 'This Ollama (0.31.9) is older than 0.32.1 and may ignore "truncate": false'),
+    ("an Ollama whose version can't be read", "Kindling couldn't read this Ollama's version, and one older than 0.32.1 "
+                                              'may ignore "truncate": false: check it (`ollama --version`)')])
 def test_a_count_far_under_the_estimate_is_printed_once_as_a_possible_cut_where_a_cut_is_possible(wire, capsys,
-                                                                                                risk):
+                                                                                                risk, said):
     """The round-4 verifier's path: Ollama's own /v1 says no window, Kindling assumes 16,384, and the server
-    counts far fewer tokens than the estimate. That can be a cut, so it's said, once per run, and logged each time."""
+    counts far fewer tokens than the estimate. That can be a cut, so it's said, once per run, and logged each time.
+    An Ollama that won't say its version counts as a risk too: the safe side (CC's call, r5 open question)."""
     if risk == "an assumed window":
         config = Config(backend="openai", model="m", base_url=VLLM)
         model, reply = models.make_model(config), COUNTED["openai"]
         assert models.context_of(config, model) == 16384               # nothing says: assumed
     else:
-        wire.facts[OLLAMA_VERSION] = {"version": "0.31.9"}
+        if risk == "an Ollama older than 0.32.1":
+            wire.facts[OLLAMA_VERSION] = {"version": "0.31.9"}         # else no /api/version: HTTP 404
         model, reply = Ollama(), COUNTED["ollama"]
     for counted in (700, 600, 500):
         wire.reply = reply(counted)
@@ -396,17 +402,33 @@ def test_a_count_far_under_the_estimate_is_printed_once_as_a_possible_cut_where_
     err = capsys.readouterr().err
     assert err.count("which can mean it cut the prompt without saying so") == 1, err   # once per run
     assert "counted 700 prompt tokens; Kindling estimated 1,000, over a quarter fewer" in err
-    assert ("set context_tokens in agent.json to its real one" in err) is (risk == "an assumed window")
-    assert ("This Ollama (0.31.9) is older than 0.32.1" in err) is (risk != "an assumed window")
+    (_, why), = [err.split("which can mean it cut the prompt without saying so")]
+    assert said in why and len(models.RISKS) == 1, (why, models.RISKS)  # the one risk this run has, and what to do
     assert len(models.take_counts()) == 3                              # and every one is in the log
 
 
 def test_without_a_known_risk_a_count_far_under_is_never_printed(wire, capsys):
-    """An Ollama whose version can't be read is not a known risk (CC's rule names two): logged, not printed."""
-    model = Ollama()                                                    # no /api/version: HTTP 404
+    """An Ollama at 0.32.1 or later, whose window Kindling asks for, is no known risk: logged, not printed."""
+    wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+    model = Ollama()
     wire.reply = COUNTED["ollama"](500)
     assert model.complete(PROSE) == "ok"
     assert "counted" not in capsys.readouterr().err and len(models.take_counts()) == 1
+
+
+def test_anthropic_which_refuses_and_never_cuts_is_never_said_to_have_cut(wire, capsys, monkeypatch):
+    """CC's call (r5 open question): an assumed Anthropic window is kept as a risk, but Anthropic refuses a prompt
+    too long (HTTP 400) and never cuts one, so a count far under the estimate is logged, never called a cut."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    config = Config(backend="anthropic")
+    model = models.make_model(config)
+    assert models.context_of(config, model) == 1_000_000 and models.RISKS          # it can't say: assumed
+    capsys.readouterr()
+    for counted in (700, 600):
+        wire.reply = COUNTED["anthropic"](counted)
+        assert model.complete(PROSE) == "ok"
+    assert "cut" not in capsys.readouterr().err
+    assert len(models.take_counts()) == 2                              # still in the log
 
 
 def test_the_agent_and_curiosity_write_a_count_far_under_the_estimate_to_the_log(wire, tmp_path, capsys):
@@ -560,6 +582,36 @@ def test_an_openai_compatible_length_finish_says_the_answer_hit_its_limit(wire, 
     assert ('set "context_tokens"' not in err) and ("so Kindling can give the answer" not in err)    # no cap follows
     wire.reply = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
     assert model.complete(PROSE) == "ok" and capsys.readouterr().err == ""
+
+
+def test_anthropics_max_tokens_stop_says_the_answer_hit_its_limit(wire, capsys, monkeypatch):
+    """CC's call (r5 open question): Anthropic's stop_reason "max_tokens" gets the same note as a 'length' finish."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    wire.reply = {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "a long answ"}]}
+    assert Anthropic().complete(MESSAGES) == "a long answ"
+    err = capsys.readouterr().err
+    assert ("WARNING: the answer hit the room left for it (16,000 tokens, the most Kindling asks Anthropic for, "
+            "thinking included) and stopped there, so it may end part way.") in err
+    assert "MOST_ANSWER in models.py" in err
+    wire.reply = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}
+    assert Anthropic().complete(MESSAGES) == "ok" and capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("settings, bigger", [({}, "start the server with a bigger window"),
+                                              ({"context_tokens": 600}, "raise context_tokens")],
+                         ids=["the server's own window", "agent.json's window"])
+def test_curiositys_note_says_how_to_read_all_by_where_the_window_came_from(wire, tmp_path, settings, bigger):
+    """CC's call (r5 open question; Lyra's wording stays otherwise): past a window the server reported, raising
+    context_tokens is wrong advice, so the note says to start the server with a bigger window."""
+    agent = openai_agent(wire, tmp_path, {LLAMA_PROPS: {"n_ctx": 600}}, **settings)       # 600 either way
+    first, _ = add_session(agent.store, [("user", "a"), ("agent", "why do rats sleep by day?"), ("user", "b"),
+                                         ("agent", "word " * 2000), ("user", "c"), ("agent", "why is the sky blue?")])
+    second, _ = add_session(agent.store, [("user", "tell me everything"), ("agent", "word " * 3000)])
+    wire.reply = {"choices": [{"message": {"content": '{"questions": []}'}}]}
+    agent.end_session()
+    assert agent.notes == [f"curiosity, session {first}: read turns 3-3 of 3; {bigger} to read all",
+                           f"curiosity, session {second}: read no turns of 1 (the newest alone is too long); {bigger} "
+                           "to read all"]
 
 
 @pytest.mark.parametrize("reply", [{"message": {"content": "ok"}, "done_reason": ["length"]},

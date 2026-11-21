@@ -449,7 +449,7 @@ MUTANTS = [
     ("llama.cpp's n_ctx under default_generation_settings counts too", "starter_agent/models.py", [(
         ', whole_number_at(props, "default_generation_settings", "n_ctx")]', "]")]),
     ("Anthropic's max_input_tokens is the window", "starter_agent/models.py", [(
-        'return whole_number_at(said, "max_input_tokens") or assumed("anthropic")', 'return assumed("anthropic")')]),
+        '        return self.reported() or assumed("anthropic")', '        return assumed("anthropic")')]),
     ("Anthropic is asked with a message's key and version", "starter_agent/models.py", [(
         "{urllib.parse.quote(self.model, safe='')}\", asked)", "{urllib.parse.quote(self.model, safe='')}\")")]),
     ("the server's window is the one the length check and recall use", "starter_agent/models.py", [(
@@ -472,7 +472,7 @@ MUTANTS = [
     ("an OpenAI-compatible server's count is compared after each call", "starter_agent/models.py", [(
         '        compare_count("The server", messages, whole_number_at(out, "usage", "prompt_tokens"))\n', "")]),
     ("Anthropic's count is compared after each call", "starter_agent/models.py", [(
-        '        compare_count("Anthropic", messages, whole_number_at(out, "usage", "input_tokens"))\n', "")]),
+        '        compare_count("Anthropic", messages, whole_number_at(out, "usage", "input_tokens"), cuts=False)\n', "")]),
     ("V23 B: a session that fit the budget but not what was left is named", "starter_agent/recall.py", [(
         "            named += skipped ", "            named += [s for s in skipped if s[2] > budget] ")]),
     ("V23 b: a session ranked below every packed one isn't named", "starter_agent/recall.py", [(
@@ -509,9 +509,9 @@ MUTANTS = [
     ("a count far under the estimate is kept for the log", "starter_agent/models.py", [(
         '    COUNTS.append(f"{said}, over a quarter fewer")\n', "")]),
     ("a count far under is printed only with a known risk of a cut", "starter_agent/models.py", [(
-        "    if RISKS:\n", "    if True:\n")]),
+        "    if RISKS and cuts:\n", "    if cuts:\n")]),
     ("with a known risk, a count far under is printed as a possible cut", "starter_agent/models.py", [(
-        "    if RISKS:\n", "    if False:\n")]),
+        "    if RISKS and cuts:\n", "    if False:\n")]),
     ("the possible cut is said once per run", "starter_agent/models.py", [(', key="possible cut")', ")")]),
     ("an assumed window is a known risk of a cut", "starter_agent/models.py", [(
         '    at_risk("Kindling had to assume', '    str("Kindling had to assume')]),
@@ -627,6 +627,20 @@ MUTANTS = [
         'f"{vllm[1]} tokens by its own count, for its {vllm[2]}-token window"')]),
     ("newer vLLM's words count too", "starter_agent/models.py", [(
         "(?:you requested|your request has)", "(?:you requested)")]),
+    # --- Round 6: the fixer's open questions, as CC decided them -----------------------------------------
+    ("Anthropic, which refuses and never cuts, is never said to have cut", "starter_agent/models.py", [(
+        'whole_number_at(out, "usage", "input_tokens"), cuts=False)', 'whole_number_at(out, "usage", "input_tokens"))')]),
+    ("a server that never cuts is never said to have cut (cuts=False)", "starter_agent/models.py", [(
+        "    if RISKS and cuts:\n", "    if RISKS:\n")]),
+    ("an Ollama whose version can't be read is a known risk of a cut", "starter_agent/models.py", [(
+        "            at_risk(\"Kindling couldn't read", "            str(\"Kindling couldn't read")]),
+    ("Anthropic's 'max_tokens' stop is said", "starter_agent/models.py", [(
+        '        if value_at(out, "stop_reason") == "max_tokens":', "        if False:")]),
+    ("past a window the server reported, curiosity's note says to start the server with a bigger one",
+     "starter_agent/curiosity.py", [("if mine and reported_window(config, model)", "if False")]),
+    ("with context_tokens set, curiosity's note says to raise it", "starter_agent/models.py", [(
+        "    return not config.context_tokens and bool(reported and reported())",
+        "    return bool(reported and reported())")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),
