@@ -118,6 +118,10 @@ def act_messages(pack, beliefs, intention, this_session):
                                        else "(none: just answer)"),
         "THIS SESSION SO FAR:\n" + this_session,
     ]
+    # Exactly two messages: the instructions, and one holding everything else. If a turn is ever sent as a
+    # chat history instead (one message per turn), a server whose window is too small can drop whole older
+    # messages silently, not even in its own log (Nexus measured Ollama doing it, 20 Nov 2026). "truncate":
+    # false (models.Ollama) is what makes that loud: Ollama refuses the prompt instead.
     return [{"role": "system", "content": ACT_SYSTEM}, {"role": "user", "content": "\n\n".join(parts)}]
 
 

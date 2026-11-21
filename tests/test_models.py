@@ -45,9 +45,10 @@ class Answer(BytesIO):
 def wire(monkeypatch):
     """Stands in for every server at urllib's own door, so no request leaves this computer. Each POST is
     recorded in .sent as (url, body, headers) and answered with .reply, or refused with .refusal = (HTTP
-    status, body), or by .refusal(body) when it is a function (None: not refused). Each GET is recorded in .asked as (url, headers) and answered with .facts[url] (raised, if
-    it is an exception), or with HTTP 404 if there's none. Every method is recorded in .methods, read from
-    the request itself: a GET carries no body and a POST always does. Header names are lower case."""
+    status, body), or by .refusal(body) when it is a function (None: not refused). Each GET is recorded in
+    .asked as (url, headers) and answered with .facts[url] (raised, if it is an exception), or with HTTP 404
+    if there's none. Every method is recorded in .methods, read from the request itself: a GET carries no
+    body and a POST always does. Header names are lower case."""
     line = SimpleNamespace(reply=None, refusal=None, facts={}, sent=[], asked=[], methods=[])
 
     def open_(opener, request, timeout=None):
@@ -333,8 +334,8 @@ def test_a_count_far_over_the_estimate_is_printed_and_one_far_under_only_logged(
         assert model.complete(PROSE) == "ok"
         err = capsys.readouterr().err
         assert ("counted" in err) is printed, (counted, err)
-        assert models.take_counts() == ([f"{err_name(name)} counted 700 prompt tokens; Kindling estimated 1,000, over a "
-                                         "quarter fewer"] if kept else []), counted
+        kept_text = f"{err_name(name)} counted 700 prompt tokens; Kindling estimated 1,000, over a quarter fewer"
+        assert models.take_counts() == ([kept_text] if kept else []), counted
         if printed:
             assert f"counted {counted:,} prompt tokens; Kindling estimated 1,000, over a quarter more" in err
             assert "the length check may let through a prompt too long for the window" in err
@@ -408,6 +409,71 @@ def test_the_after_call_compare_never_raises_whatever_the_usage(wire, monkeypatc
         model = backend(wire, monkeypatch, name)
         wire.reply = {**COUNTED[name](1000), "usage": usage}
         assert outcome(model.complete, PROSE) == "ok", (name, path)
+
+
+# --- The answer gets the room the prompt leaves, and a 'length' finish is said (Nexus, 20 Nov; CC's call) -----
+# An answer that outgrows the window made Ollama shift the start of the prompt out mid-answer, silently.
+
+def test_ollama_is_asked_for_an_answer_no_longer_than_the_room_the_prompt_leaves(wire):
+    wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+    wire.reply = {"message": {"content": "ok"}, "done_reason": "stop"}
+    assert Ollama(num_ctx=4096).complete(PROSE) == "ok"                        # PROSE: estimated 1,000 tokens
+    assert wire.sent[0][1]["options"] == {"num_ctx": 4096, "num_predict": 3096}
+    assert Ollama(num_ctx=500).complete(PROSE) == "ok"                         # sent anyway (no check_fits here):
+    assert wire.sent[1][1]["options"]["num_predict"] == 1                      # at least 1, never -1 (no limit)
+
+
+@pytest.mark.parametrize("settings, facts, max_tokens", [
+    ({"context_tokens": 4096}, {}, 3096),                                       # agent.json's window
+    ({}, {f"{VLLM}/models": {"data": [{"id": "m", "max_model_len": 8192}]}}, 7192),     # the server's own
+    ({"context_tokens": 4096}, {f"{VLLM}/models": {"data": [{"id": "m", "max_model_len": 8192}]}}, 3096),  # yours wins
+    ({}, {f"{VLLM}/models": {"data": [{"id": "m", "max_model_len": 100000}]}}, 16000),  # at most the usual maximum
+    ({"context_tokens": 500}, {}, 1),                                           # at least 1
+    ({}, {}, None)], ids=["agent.json", "vLLM", "agent.json wins", "capped", "at least 1", "assumed: not sent"])
+def test_an_openai_compatible_server_with_a_known_window_gets_max_tokens_the_room_left(wire, settings, facts,
+                                                                                       max_tokens):
+    wire.facts.update(facts)
+    config = Config(backend="openai", model="m", base_url=VLLM, **settings)
+    model = models.make_model(config)
+    models.context_of(config, model)                                           # as the agent asks first
+    wire.reply = COUNTED["openai"](1000)
+    assert model.complete(PROSE) == "ok"
+    assert wire.sent[0][1].get("max_tokens") == max_tokens
+
+
+def test_ollamas_length_finish_says_the_answer_hit_the_room_left_and_what_to_raise(wire, capsys):
+    wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+    wire.reply = {"message": {"content": "a long answ"}, "done_reason": "length"}
+    assert Ollama(num_ctx=4096).complete(PROSE) == "a long answ"
+    err = capsys.readouterr().err
+    assert "the answer hit the room left for it (3,096 tokens: what the prompt left of the 4,096-token window)" in err
+    assert 'raise "context_tokens" in agent.json' in err
+    wire.reply = {"message": {"content": "ok"}, "done_reason": "stop"}
+    assert Ollama(num_ctx=4096).complete(PROSE) == "ok" and capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("settings, said", [
+    ({"context_tokens": 4096}, "the answer hit the room left for it (3,096 tokens: what the prompt left of the window"),
+    ({}, "the answer hit the room left for it (the server's own limit)")], ids=["known window", "unknown window"])
+def test_an_openai_compatible_length_finish_says_the_answer_hit_the_room_left(wire, capsys, settings, said):
+    model = models.make_model(Config(backend="openai", model="m", base_url=VLLM, **settings))
+    wire.reply = {"choices": [{"message": {"content": "a long answ"}, "finish_reason": "length"}]}
+    assert model.complete(PROSE) == "a long answ"
+    err = capsys.readouterr().err
+    assert said in err and "context_tokens" in err, err
+    wire.reply = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    assert model.complete(PROSE) == "ok" and capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("reply", [{"message": {"content": "ok"}, "done_reason": ["length"]},
+                                   {"choices": [{"message": {"content": "ok"}, "finish_reason": None}]},
+                                   {"choices": "ok"}])
+def test_reading_the_finish_never_raises_whatever_its_shape(wire, reply):
+    wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+    wire.reply = reply
+    model = Ollama() if "message" in reply else OpenAICompatible("m", VLLM)
+    result = outcome(model.complete, MESSAGES)
+    assert result == "ok" or (isinstance(result, ModelError) and "had no choices/0" in str(result)), result
 
 
 # --- An OpenAI-compatible server's refusal of a prompt too long is PromptTooLong too (r4 verifier's LOW) ------

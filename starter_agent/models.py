@@ -70,6 +70,7 @@ def demo_brain(messages):
 # --- The context window: one number, read by the request and by recall's budget (Nexus) ---------------
 
 CONTEXT = {"fake": 12288, "ollama": 12288, "openai": 16384, "anthropic": 1_000_000}   # if the server can't say
+MOST_ANSWER = 16000      # the usual ceiling for an answer that isn't streamed (see Anthropic.complete)
 
 
 def context_of(config, model=None):
@@ -229,14 +230,26 @@ def reply_at(out, *path):
         raise ModelError(f"The model server's reply had no {'/'.join(map(str, path))}: {out!r:.200}") from None
 
 
-def whole_number_at(found, *path):
-    """found[path[0]][path[1]]..., if it is there and a whole number above 0; else None (it wasn't said)."""
+def value_at(found, *path):
+    """found[path[0]][path[1]]..., or None if it isn't there (whatever shape `found` has)."""
     try:
         for step in path:
             found = found[step]
     except (LookupError, TypeError):
         return None
+    return found
+
+
+def whole_number_at(found, *path):
+    """found[path[0]][path[1]]..., if it is there and a whole number above 0; else None (it wasn't said)."""
+    found = value_at(found, *path)
     return found if type(found) is int and found > 0 else None
+
+
+def stopped_short(room, bigger):
+    """The server says the answer stopped at its length limit ("length"): say so, and what to raise."""
+    print(f"WARNING: the answer hit the room left for it ({room}) and stopped there, so it may end part way. "
+          f"End this session, or {bigger}.", file=sys.stderr)
 
 
 def key_for(name, usual, base_url):
@@ -281,11 +294,15 @@ class Ollama:
 
     def complete(self, messages):
         self.check_version()
+        # The answer gets the room the prompt leaves, at most. An answer that outgrows the window makes
+        # Ollama shift out the start of the prompt (the instructions) mid-answer, saying nothing (Nexus, 20
+        # Nov). The estimate errs high, so this errs short: a long answer stops, and "length" says so.
+        room = max(self.num_ctx - prompt_size(messages), 1)
         try:
             out = fetch_json(f"{self.base_url}/api/chat", {
                 "model": self.model, "messages": messages, "stream": False,
                 "truncate": False,              # too long for the window: refused (HTTP 400), never cut
-                "options": {"num_ctx": self.num_ctx}})
+                "options": {"num_ctx": self.num_ctx, "num_predict": room}})
         except ModelError as error:
             raise refusal("Ollama", error, 'raise "context_tokens" in agent.json') or error
         used = whole_number_at(out, "prompt_eval_count")
@@ -294,6 +311,9 @@ class Ollama:
             print(f"WARNING: Ollama counted {used:,} prompt tokens in its {self.num_ctx:,}-token window: the "
                   "prompt left almost no room for the reply, which may stop short. End this session, or raise "
                   '"context_tokens" in agent.json.', file=sys.stderr)
+        if value_at(out, "done_reason") == "length":
+            stopped_short(f"{room:,} tokens: what the prompt left of the {self.num_ctx:,}-token window",
+                          'raise "context_tokens" in agent.json')
         return reply_at(out, "message", "content")
 
     def check_version(self):
@@ -314,7 +334,7 @@ class Ollama:
 
 
 class OpenAICompatible:
-    def __init__(self, model="", base_url="", api_key_env=""):
+    def __init__(self, model="", base_url="", api_key_env="", context_tokens=0):
         if not model:
             raise SystemExit('The openai backend needs "model" in agent.json.')
         self.key = key_for(api_key_env, "OPENAI_API_KEY", base_url)
@@ -324,27 +344,47 @@ class OpenAICompatible:
         self.model = model
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
         self.headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
+        self.context_tokens = context_tokens   # agent.json's window, if you set one: it wins
 
     def window(self):
-        """The server's window, where it says: vLLM lists each model's max_model_len on /v1/models, and
-        llama.cpp gives its n_ctx on /props, at its root. Each is asked once per run, and each is optional;
-        otherwise the usual 16,384, said once."""
+        """The server's window, where it says; otherwise the usual 16,384, said once."""
+        return self.reported() or assumed("openai")
+
+    def reported(self):
+        """The window the server says it has, or None: vLLM lists each model's max_model_len on /v1/models,
+        and llama.cpp gives its n_ctx on /props, at its root. Each is asked once per run; each is optional."""
         listed = ask_once(f"{self.base_url}/models", self.headers)
         entries = listed.get("data") if isinstance(listed, dict) else None
         for entry in entries if isinstance(entries, list) else []:
             if isinstance(entry, dict) and entry.get("id") == self.model and whole_number_at(entry, "max_model_len"):
                 return entry["max_model_len"]                                              # vLLM
         props = ask_once(re.sub(r"/v1$", "", self.base_url) + "/props", self.headers)     # llama.cpp
-        return (whole_number_at(props, "n_ctx") or whole_number_at(props, "default_generation_settings", "n_ctx")
-                or assumed("openai"))
+        return whole_number_at(props, "n_ctx") or whole_number_at(props, "default_generation_settings", "n_ctx")
+
+    def room(self, messages):
+        """The most the answer may take, as for Ollama: what the prompt leaves of a known window (context_tokens
+        in agent.json, or the server's own), at least 1 and at most MOST_ANSWER. None when the window isn't
+        known (Kindling only assumed one): then the server's own limit applies."""
+        known = self.context_tokens or self.reported()
+        return min(max(known - prompt_size(messages), 1), MOST_ANSWER) if known else None
 
     def complete(self, messages):
+        room = self.room(messages)
         try:
             out = fetch_json(f"{self.base_url}/chat/completions",
-                             {"model": self.model, "messages": messages}, self.headers)
+                             {"model": self.model, "messages": messages, **({"max_tokens": room} if room else {})},
+                             self.headers)
         except ModelError as error:
             raise refusal("The server", error, "start the server with a bigger window") or error
         compare_count("The server", messages, whole_number_at(out, "usage", "prompt_tokens"))
+        if value_at(out, "choices", 0, "finish_reason") == "length":
+            if room:
+                stopped_short(f"{room:,} tokens: what the prompt left of the window, at most {MOST_ANSWER:,}",
+                              "give the model a bigger window: the server's own (vLLM's --max-model-len, llama.cpp's "
+                              '--ctx-size), and "context_tokens" in agent.json if you set it')
+            else:
+                stopped_short("the server's own limit", 'set "context_tokens" in agent.json to the server\'s window, '
+                              "so Kindling can give the answer all the room the prompt leaves")
         return reply_at(out, "choices", 0, "message", "content")
 
 
@@ -375,7 +415,7 @@ class Anthropic:
                         # "fallbacks": if a safety check declines a harmless message, Anthropic retries it
                         # on the model it recommends instead of failing. Delete it and the beta header
                         # (self.headers) if your model or provider doesn't accept them.
-                        {"model": self.model, "max_tokens": 16000, "system": system, "messages": rest,
+                        {"model": self.model, "max_tokens": MOST_ANSWER, "system": system, "messages": rest,
                          "fallbacks": "default"}, self.headers)
         compare_count("Anthropic", messages, whole_number_at(out, "usage", "input_tokens"))
         if isinstance(out, dict) and out.get("stop_reason") == "refusal":     # declined: there's no reply
@@ -392,7 +432,7 @@ def make_model(config):
     if config.backend == "ollama":
         return Ollama(config.model, config.base_url, context_of(config))
     if config.backend == "openai":
-        return OpenAICompatible(config.model, config.base_url, config.api_key_env)
+        return OpenAICompatible(config.model, config.base_url, config.api_key_env, config.context_tokens)
     if config.backend == "anthropic":
         return Anthropic(config.model, config.base_url, config.api_key_env)
     raise SystemExit(f'Unknown backend "{config.backend}": use fake, ollama, openai or anthropic.')

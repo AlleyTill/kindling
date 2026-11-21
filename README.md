@@ -260,6 +260,13 @@ reuse, but a cut looks the same: Nexus found that a prompt Ollama cut counts abo
 a cut is possible (an assumed window, or an Ollama older than 0.32.1), it is also printed, once, as a
 possible cut. And a count near Ollama's window warns you that the prompt left almost no room for the reply.
 
+The answer gets the room the prompt leaves, and no more: Kindling asks Ollama for at most that many tokens
+(`num_predict`), and an OpenAI-compatible server too when its window is known (`max_tokens`, at most
+16,000). Nexus found that an answer which outgrows the window makes Ollama shift the start of the prompt
+(the instructions) out of it mid-answer, saying nothing. Now a long answer stops at the room left instead,
+and Kindling tells you, and which setting to raise. Ollama can also be told not to shift (`"shift": false`),
+but "shift" is a load-time setting, so a shared Ollama reloads if callers differ.
+
 A session is never cut in half, so a session bigger than the budget is never recalled, and a 30-turn day
 with real replies can be that big. **`chat` and `recall` name a session when its size, not its rank, kept it
 out: it didn't fit what was left of the budget while a session ranked below it did, or nothing fit at all.**

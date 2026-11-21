@@ -326,7 +326,7 @@ def test_curiosity_13_turns_are_never_stitched_together_past_one_that_doesnt_fit
     sid, ids = add_session(agent.store, [("user", "a"), ("agent", "why do rats sleep by day?"), ("user", "b"),
                                          ("agent", "word " * 2000), ("user", "c"), ("agent", "why is the sky blue?")])
     agent.end_session()
-    assert seen == [[ids[5]]]                                   # the newest alone: the oldest fits, but not past the gap
+    assert seen == [[ids[5]]]                     # the newest alone: the oldest would fit, but not past the gap
     assert agent.notes == [f"curiosity, session {sid}: read turns 3-3 of 3; raise context_tokens to read all"]
     assert part_rows(agent.store)[0][2] == {"of": 3, "read": [3, 3], "skipped": [1, 2]}
 

@@ -560,6 +560,31 @@ MUTANTS = [
         "        except PromptTooLong as error:     # the server counted", "        except ZeroDivisionError as error:  #")]),
     ("a refused block counts as no turn read", "starter_agent/curiosity.py", [(
         "        read = [] if refused else block", "        read = block")]),
+    # --- Round 5: the answer gets the room the prompt leaves (Nexus, 20 Nov; CC's call) ------------------
+    ("Ollama is asked for an answer no longer than the room left (num_predict)", "starter_agent/models.py", [(
+        '"options": {"num_ctx": self.num_ctx, "num_predict": room}}', '"options": {"num_ctx": self.num_ctx}}')]),
+    ("num_predict is num_ctx minus the prompt's estimate", "starter_agent/models.py", [(
+        "        room = max(self.num_ctx - prompt_size(messages), 1)", "        room = max(self.num_ctx, 1)")]),
+    ("num_predict is at least 1", "starter_agent/models.py", [(
+        "        room = max(self.num_ctx - prompt_size(messages), 1)", "        room = self.num_ctx - prompt_size(messages)")]),
+    ("an OpenAI-compatible server with a known window gets max_tokens", "starter_agent/models.py", [(
+        '**({"max_tokens": room} if room else {})', "**{}")]),
+    ("max_tokens is at most the usual maximum", "starter_agent/models.py", [(
+        "min(max(known - prompt_size(messages), 1), MOST_ANSWER) if known", "max(known - prompt_size(messages), 1) if known")]),
+    ("max_tokens is at least 1", "starter_agent/models.py", [(
+        "min(max(known - prompt_size(messages), 1), MOST_ANSWER) if known", "min(known - prompt_size(messages), MOST_ANSWER) if known")]),
+    ("no max_tokens for a window Kindling only assumed", "starter_agent/models.py", [(
+        "        known = self.context_tokens or self.reported()", "        known = self.context_tokens or self.window()")]),
+    ("agent.json's window wins for max_tokens", "starter_agent/models.py", [(
+        "        known = self.context_tokens or self.reported()", "        known = self.reported() or self.context_tokens")]),
+    ("the OpenAI-compatible backend is given agent.json's window", "starter_agent/models.py", [(
+        "config.api_key_env, config.context_tokens)", "config.api_key_env)")]),
+    ("Ollama's 'length' finish is said", "starter_agent/models.py", [(
+        '        if value_at(out, "done_reason") == "length":', "        if False:")]),
+    ("an OpenAI-compatible 'length' finish is said", "starter_agent/models.py", [(
+        '        if value_at(out, "choices", 0, "finish_reason") == "length":', "        if False:")]),
+    ("the 'length' note names the room left", "starter_agent/models.py", [(
+        'print(f"WARNING: the answer hit the room left for it ({room}) and', 'print(f"WARNING: the answer hit a limit and')]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),
