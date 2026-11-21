@@ -314,7 +314,8 @@ MUTANTS = [
     ("under 1,000 tokens of room, recall is skipped", "starter_agent/agent.py", [(
         "        if room < 1000:", "        if room < 0:")]),
     ("a prompt too long for the context is refused, not sent", "starter_agent/agent.py", [(
-        "            check_fits(messages, context_of(self.config, self.model))\n", "")]),
+        "            check_fits(messages, context_of(self.config, self.model), reported_window(self.config, self.model))\n",
+        "")]),
     ("the length check leaves a quarter to spare", "starter_agent/models.py", [(
         "if size * 5 // 4 > context:", "if size > context:")]),
     ("one context number for Ollama's request and the budget", "starter_agent/models.py", [(
@@ -650,6 +651,13 @@ MUTANTS = [
     # --- Round 7: an error body is searched only so far (r6 verifier's LOW) -----------------------------------
     ("vLLM's words are looked for only in an error body's first 2,000 characters", "starter_agent/models.py", [(
         "VLLM_TOO_LONG.search(error.said[:SEARCHED])", "VLLM_TOO_LONG.search(error.said)")]),
+    # --- Round 7: the chat refusal's advice, by where the window came from (CC's call) ------------------------
+    ("past a window the server reported, the chat refusal says to start the server with a bigger one",
+     "starter_agent/agent.py", [(
+        "check_fits(messages, context_of(self.config, self.model), reported_window(self.config, self.model))",
+        "check_fits(messages, context_of(self.config, self.model))")]),
+    ("past any other window, the chat refusal says to raise context_tokens", "starter_agent/models.py", [(
+        '"start the server with a bigger window" if reported else', '"start the server with a bigger window" if True else')]),
     # --- Round 7: the round-6 verifier's two surviving mutants, each now with a test --------------------------
     ("R3 curiosity asks no server for a session with no agent turn", "starter_agent/curiosity.py", [(
         "if mine and reported_window(config, model)", "if reported_window(config, model)")]),

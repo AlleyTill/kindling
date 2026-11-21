@@ -1021,6 +1021,27 @@ def test_vllms_words_are_looked_for_only_in_the_first_2000_characters_of_the_bod
     assert isinstance(error, PromptTooLong) and "5000 tokens by its own count, for its 4096-token window" in str(error)
 
 
+# --- Round 7: the chat refusal gives curiosity's advice for a window the server reported (CC's call) ------------
+
+@pytest.mark.parametrize("backend, facts, settings, bigger", [
+    ("openai", {LLAMA_PROPS: {"n_ctx": 2048}}, {}, "start the server with a bigger window"),
+    ("openai", {f"{VLLM}/models": {"data": [{"id": "m", "max_model_len": 2048}]}}, {},
+     "start the server with a bigger window"),
+    ("openai", {LLAMA_PROPS: {"n_ctx": 2048}}, {"context_tokens": 2048}, 'raise "context_tokens" in agent.json'),
+    ("openai", {}, {}, 'raise "context_tokens" in agent.json'),
+    ("ollama", {}, {}, 'raise "context_tokens" in agent.json')],
+    ids=["llama.cpp's own window", "vLLM's own window", "agent.json's window", "an assumed window", "Ollama"])
+def test_the_chat_refusal_says_how_to_get_a_bigger_window_by_where_the_window_came_from(wire, tmp_path, backend,
+                                                                                         facts, settings, bigger):
+    """As curiosity's note does (r6): past a window the server reported, raising context_tokens is wrong advice,
+    and on llama.cpp it is the bold claim's exception (r6 verifier)."""
+    agent = openai_agent(wire, tmp_path, facts, **{"backend": backend, **settings})
+    error = outcome(agent.handle, "word " * 20000)                         # ~25,000 tokens: too long for any of them
+    assert isinstance(error, PromptTooLong), error
+    assert str(error).endswith(f"End this session (/end, or `session end`), or {bigger}"), error
+    assert wire.sent == [] and agent.store.turns(1) == []                  # never sent, and not kept
+
+
 # --- Round 7: the round-6 verifier's two surviving mutants, each now with a test ------------------------------
 
 def test_curiosity_on_a_session_with_no_agent_turn_asks_no_server(wire, tmp_path):

@@ -114,14 +114,17 @@ def estimate_tokens(text):
     return (len(text) - digits - wide - punct + 3) // 4 + digits + wide + (punct + 1) // 2
 
 
-def check_fits(messages, context):
+def check_fits(messages, context, reported=False):
     """Refuse, loudly, a prompt too long for the context, before it's sent: a server may cut it without
-    telling the model. The estimate is only an estimate, so the prompt must fit with a quarter to spare."""
+    telling the model. The estimate is only an estimate, so the prompt must fit with a quarter to spare.
+    `reported`: the context is the window the server said it has (reported_window), so a bigger one has to
+    start at the server, as curiosity's note says; raising context_tokens past it is wrong advice."""
     size = prompt_size(messages)
     if size * 5 // 4 > context:
+        bigger = "start the server with a bigger window" if reported else 'raise "context_tokens" in agent.json'
         raise PromptTooLong(f"The prompt is about {size:,} tokens: too long for the model's {context:,}-token "
                          "context, so it wasn't sent (it would be cut without the model knowing). End this "
-                         'session (/end, or `session end`), or raise "context_tokens" in agent.json')
+                         f"session (/end, or `session end`), or {bigger}")
 
 
 def prompt_size(messages):

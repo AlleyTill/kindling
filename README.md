@@ -250,10 +250,11 @@ to 18% low on Mistral 7B v0.3 (real tokens at most 1.18 times it, on JSON), insi
 spare. It is no bound on text built to defeat it, or on text in a script the tokenizer lacks.
 
 Before anything is sent, the whole prompt is checked against the context with a quarter to spare, and one
-too long is refused with a message. Ollama is also asked to refuse one itself (`"truncate": false`), and its
-refusal comes back as the same message, with Ollama's own count; so does the same refusal from an
-OpenAI-compatible server (llama.cpp's or vLLM's, with the server's own numbers), and curiosity then skips
-that session rather than stopping there. **So a prompt is never cut in silence on
+too long is refused with a message: end the session, or raise `context_tokens` (where the window is the one
+the server reported, start the server with a bigger window instead). Ollama is also asked to refuse one
+itself (`"truncate": false`), and its refusal comes back as the same message, with Ollama's own count; so
+does the same refusal from an OpenAI-compatible server (llama.cpp's or vLLM's, with the server's own
+numbers), and curiosity then skips that session rather than stopping there. **So a prompt is never cut in silence on
 Ollama 0.32.1 or later, or on a server that reports its window** (unless you set `context_tokens` above it).
 Past the estimate's quarter margin (text in a script the tokenizer lacks, for example), a server with context
 shift on may cut a prompt instead of refusing it. Elsewhere it can be: an older Ollama may ignore

@@ -14,7 +14,8 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from . import bdi, curiosity
-from .models import check_fits, clean, context_of, prompt_size, split_json, take_counts, text_of
+from .models import (check_fits, clean, context_of, prompt_size, reported_window, split_json, take_counts,
+                     text_of)
 from .recall import Memory, Recalled, render_session
 
 
@@ -85,7 +86,7 @@ class Agent:
 
             # ACT: one call, refused before it's sent if it can't fit the model's context.
             messages = bdi.act_messages(pack.text, beliefs, intention, this)
-            check_fits(messages, context_of(self.config, self.model))
+            check_fits(messages, context_of(self.config, self.model), reported_window(self.config, self.model))
             reply, changes = split_json(clean(text_of(self.model.complete(messages))))
             counts = take_counts()      # the server's counts far under the estimate: for the log only
 
