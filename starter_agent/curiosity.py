@@ -3,6 +3,11 @@
 - Once per session, when it ends: one model call reads the agent's OWN turns from that session. If the
   call fails (the model can't be reached, or you press Ctrl-C), the session stays unread and the next
   session end tries again (Agent.end_session).
+- A session too long for one call (Lyra's rule, 20 Nov): its NEWEST agent turns that fit are read, as one
+  unbroken block, never turns stitched together from different places. The log records the turns read
+  and skipped, you get one note ("read turns k-n of m; raise context_tokens to read all"), and the
+  session is marked read, so nothing repeats at later session ends. If the server refuses even that
+  block as too long, no turn is read, and that is logged and said the same way.
 - Every question must quote 2 to 20 whole words found word for word in the agent turn it cites, or
   it is dropped.
 - A question too close (similarity 0.85) to an open OR dropped one is skipped. With the default hash
@@ -17,7 +22,8 @@ import re
 
 from . import bdi
 from .embed import cosine
-from .models import check_fits, context_of, one_line, parse_json, split_json, take_counts, text_of
+from .models import (PromptTooLong, check_fits, context_of, estimate_tokens, one_line, parse_json, split_json,
+                     take_counts, text_of)
 from .recall import turn_line
 
 SYSTEM = """You are reading your own turns from one finished session. List the questions you raised \
@@ -36,7 +42,7 @@ def check(question, my_turns):
     if not isinstance(text, str) or not one_line(text):
         return "no question text"
     if type(turn) is not int or turn not in my_turns:
-        return f"turn {turn!r} is not one of the agent's turns in this session"
+        return f"turn {turn!r} is not one of the agent's turns read from this session"
     if not isinstance(quote, str) or not 2 <= len(quote.split()) <= 20:
         return "the quote must be 2 to 20 words"
     if not re.search(r"(?<!\w)" + re.escape(quote) + r"(?!\w)", my_turns[turn]):   # whole words only
@@ -64,17 +70,23 @@ def make_room(store, limit):
         store.revise("questions", waiting.pop(0), status="expired")
 
 
-def run(store, model, embedder, config, session_id):
-    """The one curiosity call for a finished session. Returns the ids of the questions queued. The questions
-    and the session's read mark are written together, and only if the session still exists (you may have
-    deleted it while the model was answering)."""
+def run(store, model, embedder, config, session_id, notes=None):
+    """The one curiosity call for a finished session. Returns the ids of the questions queued. A session too
+    long for one call is read in part (newest_that_fit); then the log says which turns were read and which
+    skipped, and `notes`, if given, gets one line saying so. The questions, the log and the session's read
+    mark are written together, and only if the session still exists (you may have deleted it while the
+    model was answering)."""
     mine = [t for t in store.turns(session_id) if t["role"] == "agent"]
-    raw = None
-    if mine:
-        messages = [{"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": "\n".join(turn_line(t) for t in mine)}]
-        check_fits(messages, context_of(config, model))
-        raw = text_of(model.complete(messages))
+    context = context_of(config, model) if mine else 0
+    block = newest_that_fit(mine, context)
+    raw = refused = None
+    if block:
+        messages = prompt(block)
+        check_fits(messages, context)
+        try:
+            raw = text_of(model.complete(messages))
+        except PromptTooLong as error:     # the server counted more than the estimate: no turn was read
+            refused = error
     counts = take_counts()                 # the server's counts far under the estimate: for the log only
     with store.transaction():
         if store.session(session_id) is None:
@@ -82,7 +94,65 @@ def run(store, model, embedder, config, session_id):
         store.mark_read(session_id)
         for count in counts:
             store.log(session_id, "count", count)
-        return queue(store, embedder, config, session_id, mine, raw) if raw is not None else []
+        read = [] if refused else block
+        if len(read) < len(mine):
+            note = part_read(store, session_id, mine, block, refused)
+            if notes is not None:
+                notes.append(note)
+        return queue(store, embedder, config, session_id, read, raw) if raw is not None else []
+
+
+def prompt(turns):
+    return [{"role": "system", "content": SYSTEM},
+            {"role": "user", "content": "\n".join(turn_line(t) for t in turns)}]
+
+
+def newest_that_fit(mine, context):
+    """The agent's turns to read in one call (Lyra's rule): all of them if they fit the context with a quarter
+    to spare, as check_fits asks; else the newest that fit, as one unbroken block; possibly none. Each turn is
+    priced on its own, which errs high, never low, against the prompt priced whole."""
+    if not mine:
+        return []
+    try:
+        check_fits(prompt(mine), context)
+        return mine
+    except PromptTooLong:
+        pass
+    block, used = [], estimate_tokens(SYSTEM)
+    for turn in reversed(mine):            # newest first
+        used += estimate_tokens(turn_line(turn) + "\n")
+        if used * 5 // 4 > context:
+            break                          # and stop: a turn past the gap is never stitched on
+        block.insert(0, turn)
+    return block
+
+
+def part_read(store, session_id, mine, block, refused):
+    """Log which of the session's agent turns were read and which skipped (by place, 1 to m, and by turn id),
+    and return the one note for you. `block`: the newest turns that fit, which the server may have refused."""
+    m, k = len(mine), len(mine) - len(block) + 1
+    if refused:
+        reason = (f"read none of its {m} agent turns: the server refused turns {k}-{m} ({ids(block)}) as too "
+                  f"long, though Kindling estimated they fit: {refused}; skipped 1-{m} ({ids(mine)})")
+        note = (f"curiosity, session {session_id}: read no turns of {m}: the server refused turns {k}-{m} as too "
+                "long for its window (see: log)")
+    elif block:
+        reason = (f"read agent turns {k}-{m} of {m} ({ids(block)}); skipped 1-{k - 1} ({ids(mine[:k - 1])}), "
+                  "too long to read with them in one call")
+        note = f"curiosity, session {session_id}: read turns {k}-{m} of {m}; raise context_tokens to read all"
+    else:
+        reason = (f"read none of its {m} agent turns: the newest alone is too long for one call; skipped "
+                  f"1-{m} ({ids(mine)})")
+        note = (f"curiosity, session {session_id}: read no turns of {m} (the newest alone is too long); raise "
+                "context_tokens to read all")
+    store.log(session_id, "curiosity read part", reason,
+              json.dumps({"of": m, "read": [k, m] if block and not refused else None,
+                          "skipped": [1, m if refused or not block else k - 1]}))
+    return note
+
+
+def ids(turns):
+    return f"turn ids {turns[0]['id']}-{turns[-1]['id']}"
 
 
 def queue(store, embedder, config, session_id, mine, raw):

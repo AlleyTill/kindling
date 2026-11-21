@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from conftest import agent_turns, only, say, scripted
+from conftest import add_session, agent_turns, only, say, scripted
 from starter_agent import curiosity
 from starter_agent.embed import HashEmbedder, cosine
 
@@ -266,3 +266,89 @@ def test_curiosity_11_the_hash_embedder_can_also_skip_a_different_question():
                 ("Why does the model converge?", "Why does the model not converge?"): .916}
     for (a, b), similarity in measured.items():
         assert round(cosine(*HashEmbedder().embed([a, b])), 3) == similarity, (a, b)
+
+
+# --- Round 5: Lyra's rule for a session too long for curiosity (Lyra, 20 Nov 2026, 10:19) -----------------
+#     Its newest agent turns that fit, as ONE block, never stitched together; the log records the turns read
+#     and skipped; ONE note at that session's end, "read turns k-n of m; raise context_tokens to read all";
+#     then it is marked read, and nothing repeats at later session ends.
+
+def long_session(store, n=10):
+    """A finished session of n exchanges, each agent turn about 100 tokens. Returns (its id, its agent turns)."""
+    turns = []
+    for i in range(1, n + 1):
+        turns += [("user", f"go on {i}"), ("agent", f"part {i}: " + "word " * 80)]
+    sid, _ = add_session(store, turns)
+    return sid, [t for t in store.turns(sid) if t["role"] == "agent"]
+
+
+def room_for(mine, newest):
+    """A context with room for the newest `newest` agent turns and half of the next older one, by the same
+    reckoning check_fits uses (the prompt with a quarter to spare)."""
+    from starter_agent.models import estimate_tokens
+    from starter_agent.recall import turn_line
+    costs = [estimate_tokens(turn_line(t) + "\n") for t in mine]
+    return (estimate_tokens(curiosity.SYSTEM) + sum(costs[-newest:]) + costs[-newest - 1] // 2) * 5 // 4 + 1
+
+
+def part_rows(store):
+    return [(r["session_id"], r["reason"], json.loads(r["payload"]))
+            for r in store.db.execute("SELECT * FROM log WHERE kind='curiosity read part' ORDER BY id")]
+
+
+def test_curiosity_12_a_session_too_long_is_read_in_part_said_once_and_marked_read(make_agent):
+    from starter_agent.models import PromptTooLong, check_fits
+    seen = []
+    agent = make_agent(fn=scripted([], lambda prompt: seen.append(sorted(agent_turns(prompt))) or '{"questions": []}'))
+    sid, mine = long_session(agent.store)
+    agent.config.context_tokens = room_for(mine, newest=5)
+    ids = [t["id"] for t in mine]
+    assert check_fits(curiosity.prompt(mine[5:]), agent.config.context_tokens) is None        # the fixture: five fit,
+    with pytest.raises(PromptTooLong):                                                      # six don't
+        check_fits(curiosity.prompt(mine[4:]), agent.config.context_tokens)
+    assert agent.end_session() == []
+    assert seen == [ids[5:]]                                    # the newest five, as one block
+    assert agent.notes == [f"curiosity, session {sid}: read turns 6-10 of 10; raise context_tokens to read all"]
+    assert part_rows(agent.store) == [(sid, f"read agent turns 6-10 of 10 (turn ids {ids[5]}-{ids[9]}); skipped "
+                                            f"1-5 (turn ids {ids[0]}-{ids[4]}), too long to read with them in one call",
+                                       {"of": 10, "read": [6, 10], "skipped": [1, 5]})]
+    assert agent.store.unread_sessions() == []                  # marked read
+    add_session(agent.store, [("user", "hi"), ("agent", "a short one")])
+    agent.end_session()
+    assert len(seen) == 2 and len(agent.notes) == 1             # nothing repeats; a session that fits: no note
+    assert len(part_rows(agent.store)) == 1
+
+
+def test_curiosity_13_turns_are_never_stitched_together_past_one_that_doesnt_fit(make_agent):
+    seen = []
+    agent = make_agent(fn=scripted([], lambda prompt: seen.append(sorted(agent_turns(prompt))) or '{"questions": []}'),
+                       context_tokens=600)
+    sid, ids = add_session(agent.store, [("user", "a"), ("agent", "why do rats sleep by day?"), ("user", "b"),
+                                         ("agent", "word " * 2000), ("user", "c"), ("agent", "why is the sky blue?")])
+    agent.end_session()
+    assert seen == [[ids[5]]]                                   # the newest alone: the oldest fits, but not past the gap
+    assert agent.notes == [f"curiosity, session {sid}: read turns 3-3 of 3; raise context_tokens to read all"]
+    assert part_rows(agent.store)[0][2] == {"of": 3, "read": [3, 3], "skipped": [1, 2]}
+
+
+def test_curiosity_14_a_question_may_cite_only_a_turn_that_was_read(make_agent):
+    def reader(prompt):
+        return json.dumps({"questions": [
+            {"text": "Why do rats sleep by day?", "quote": "why do rats sleep", "turn": ids[1]},      # skipped
+            {"text": "Why is the sky blue?", "quote": "why is the sky", "turn": ids[5]}]})           # read
+    agent = make_agent(fn=scripted([], reader), context_tokens=600)
+    _, ids = add_session(agent.store, [("user", "a"), ("agent", "why do rats sleep by day?"), ("user", "b"),
+                                       ("agent", "word " * 2000), ("user", "c"), ("agent", "why is the sky blue?")])
+    agent.end_session()
+    assert [q["text"] for q in curiosity.open_questions(agent.store)] == ["Why is the sky blue?"]
+    reason = only(agent.store.db.execute("SELECT reason FROM log WHERE kind='rejected question'"))[0]
+    assert reason == f"turn {ids[1]} is not one of the agent's turns read from this session"
+
+
+def test_curiosity_15_a_session_that_fits_is_read_whole_with_no_note(make_agent):
+    seen = []
+    agent = make_agent(fn=scripted([], lambda prompt: seen.append(sorted(agent_turns(prompt))) or '{"questions": []}'))
+    sid, mine = long_session(agent.store)
+    agent.config.context_tokens = room_for(mine, newest=9) * 2           # all ten fit
+    agent.end_session()
+    assert seen == [[t["id"] for t in mine]] and agent.notes == [] and part_rows(agent.store) == []

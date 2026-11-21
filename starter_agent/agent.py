@@ -14,7 +14,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from . import bdi, curiosity
-from .models import PromptTooLong, check_fits, clean, context_of, estimate_tokens, split_json, take_counts, text_of
+from .models import check_fits, clean, context_of, estimate_tokens, split_json, take_counts, text_of
 from .recall import Memory, Recalled, render_session
 
 
@@ -104,19 +104,15 @@ class Agent:
 
     def end_session(self):
         """End the open session; then curiosity reads every ended session it hasn't read yet: this one, and
-        any whose read failed before. Returns the new question ids."""
+        any whose read failed before. A session too long for one call is read in part, and you're told
+        once (curiosity.run). Returns the new question ids."""
         session = self.store.open_session()
         if session:
             self.store.end_session(session["id"])
         queued = []
         for unread in self.store.unread_sessions():
             try:
-                queued += curiosity.run(self.store, self.model, self.embedder, self.config, unread["id"])
-            except PromptTooLong as error:     # this one session is too big to read in one call: say so, go on
-                self.store.log(unread["id"], "curiosity failed", repr(error))
-                self.notes.append(f"session {unread['id']} is too long for curiosity to read in one call, so it "
-                                  'stays unread; raising "context_tokens" in agent.json lets it in (see: log)')
-                continue
+                queued += curiosity.run(self.store, self.model, self.embedder, self.config, unread["id"], self.notes)
             except Exception as error:     # the model can't be reached: it stays unread, and the next end tries again
                 self.store.log(unread["id"], "curiosity failed", repr(error))
                 self.notes.append(f"curiosity couldn't read session {unread['id']} ({error}); the next "

@@ -285,10 +285,12 @@ In this order: `agent.py` (the loop, about 140 lines), `recall.py`, `bdi.py`, `c
   confidence from 0 to 1; otherwise it's dropped and logged (`log`).
 - **Curiosity** runs once when a session ends: one model call reads the agent's own turns and lists the
   questions it raised and didn't answer. If that call fails, the session stays unread and the next session
-  end tries again. A session too long to read in one call stays unread and is named, and the others are still read;
-  raising `"context_tokens"` lets it in. Each question must quote 2 to 20 of the agent's words exactly, from the turn it names,
-  or it's dropped: the quote shows where in the agent's words it came from, so check that it really asks
-  that. Words are counted by spaces, so in a language written without them (Chinese, Japanese, Thai) no
+  end tries again. A session too long to read in one call is read in part (Lyra's rule): its newest agent
+  turns that fit, as one block, never turns stitched together from different places. The log records the
+  turns read and skipped, you're told once ("read turns k-n of m; raise context_tokens to read all"), and
+  the session counts as read, so nothing repeats. Each question must quote 2 to 20 of the agent's words
+  exactly, from a turn that was read, or it's dropped: the quote shows where in the agent's words it came
+  from, so check that it really asks that. Words are counted by spaces, so in a language written without them (Chinese, Japanese, Thai) no
   question passes yet. It never searches outside and never talks to you on its own.
 
 **Try one part alone.** `python -m starter_agent.fixtures recall` (or `bdi`, or `curiosity`) runs one

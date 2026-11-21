@@ -532,6 +532,34 @@ MUTANTS = [
         "            raise error")]),
     ("llama.cpp's count, under \"error\", is quoted", "starter_agent/models.py", [(
         "for found in (said, nested) if", "for found in (said,) if")]),
+    # --- Round 5: Lyra's rule for a session too long for curiosity (20 Nov) --------------------------------
+    ("a session too long is read in part, not skipped", "starter_agent/curiosity.py", [(
+        "    except PromptTooLong:\n        pass\n", "    except PromptTooLong:\n        return []\n")]),
+    ("the part read is the NEWEST turns", "starter_agent/curiosity.py", [(
+        "    for turn in reversed(mine):            # newest first", "    for turn in mine:")]),
+    ("turns are never stitched together past one that doesn't fit", "starter_agent/curiosity.py", [(
+        "            break                          # and stop: a turn past the gap is never stitched on",
+        '            used -= estimate_tokens(turn_line(turn) + "\\n")\n            continue')]),
+    ("a session that fits is read whole", "starter_agent/curiosity.py", [(
+        "        check_fits(prompt(mine), context)\n        return mine\n",
+        "        check_fits(prompt(mine), context)\n        return mine[1:]\n")]),
+    ("the log records the turns read and skipped", "starter_agent/curiosity.py", [(
+        '    store.log(session_id, "curiosity read part", reason,', '    (session_id, "curiosity read part", reason,')]),
+    ("the note gives the turns read: k-n of m", "starter_agent/curiosity.py", [(
+        "    m, k = len(mine), len(mine) - len(block) + 1", "    m, k = len(mine), len(mine) - len(block)")]),
+    ("one note at that session's end", "starter_agent/curiosity.py", [(
+        "                notes.append(note)", "                pass")]),
+    ("the agent passes its notes to curiosity", "starter_agent/agent.py", [(
+        'unread["id"], self.notes)', 'unread["id"])')]),
+    ("a session read in part is marked read", "starter_agent/curiosity.py", [(
+        "        store.mark_read(session_id)\n",
+        "        if len(block) == len(mine):\n            store.mark_read(session_id)\n")]),
+    ("a question may cite only a turn that was read", "starter_agent/curiosity.py", [(
+        "queue(store, embedder, config, session_id, read, raw)", "queue(store, embedder, config, session_id, mine, raw)")]),
+    ("a server's refusal in curiosity is caught there, and the session marked read", "starter_agent/curiosity.py", [(
+        "        except PromptTooLong as error:     # the server counted", "        except ZeroDivisionError as error:  #")]),
+    ("a refused block counts as no turn read", "starter_agent/curiosity.py", [(
+        "        read = [] if refused else block", "        read = block")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

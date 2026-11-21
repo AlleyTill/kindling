@@ -283,6 +283,8 @@ def test_a_file_that_isnt_kindlings_memory_is_left_alone(tmp_path):
 
 
 # --- One session too long for curiosity doesn't stop it reading the others (r3 verifier's HIGH) -------------
+#     Round 5: by Lyra's rule (20 Nov) it no longer stays unread. Here even its newest turn alone is too long,
+#     so no turn of it is read; that is logged and said once, and the session is marked read.
 
 def test_one_session_too_long_for_curiosity_doesnt_stop_it_reading_the_others(make_agent):
     read = []
@@ -296,9 +298,12 @@ def test_one_session_too_long_for_curiosity_doesnt_stop_it_reading_the_others(ma
     _, first = add_session(store, [("user", "hi"), ("agent", "why is the sky blue?")])
     _, second = add_session(store, [("user", "hi"), ("agent", "why do rats sleep by day?")])
     agent.end_session()
-    assert [s["id"] for s in store.unread_sessions()] == [big]          # only the big one stays unread
+    assert store.unread_sessions() == []                                # the big one too: marked read
     assert read == [[first[1]], [second[1]]]                            # the two after it were read
-    assert any(f"session {big} is too long" in note and "context_tokens" in note for note in agent.notes)
+    assert agent.notes == [f"curiosity, session {big}: read no turns of 1 (the newest alone is too long); raise "
+                           "context_tokens to read all"]
+    agent.end_session()
+    assert len(read) == 2 and len(agent.notes) == 1                     # and nothing repeats
 
 
 def test_deleting_the_last_session_keeps_the_record_of_earlier_deletes(make_agent):

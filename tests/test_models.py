@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import Clock, add_session
+from conftest import Clock, add_session, only
 from starter_agent import models
 from starter_agent.agent import Agent
 from starter_agent.config import Config
@@ -276,7 +276,7 @@ def test_curiosity_never_sends_a_prompt_too_long_for_the_servers_window(wire, tm
     wire.reply = {"choices": [{"message": {"content": '{"questions": []}'}}]}
     agent.end_session()
     sizes = [models.prompt_size(body["messages"]) for _, body, _ in wire.sent]
-    assert all(size * 5 // 4 <= 2048 for size in sizes), sizes
+    assert len(sizes) == 1 and all(size * 5 // 4 <= 2048 for size in sizes), sizes      # read in part (Lyra)
 
 
 @pytest.mark.parametrize("failure", [urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
@@ -448,7 +448,13 @@ def test_a_servers_refusal_during_curiosity_skips_that_session_and_reads_the_res
     agent.end_session()
     read = [body["messages"][-1]["content"] for _, body, _ in wire.sent]
     assert len(read) == 2 and "why is the sky blue?" in read[1], read          # the next session was still read
-    assert small not in [s["id"] for s in agent.store.unread_sessions()]
+    assert agent.store.unread_sessions() == []                                 # both marked read
+    assert agent.notes == ["curiosity, session 1: read no turns of 1: the server refused turns 1-1 as too long "
+                           "for its window (see: log)"]
+    reason = only(agent.store.db.execute("SELECT reason FROM log WHERE kind='curiosity read part'"))[0]
+    assert "5120 tokens by its own count, for its 4096-token window" in reason
+    agent.end_session()
+    assert len(wire.sent) == 2 and len(agent.notes) == 1                       # nothing repeats at the next end
 
 
 def test_openai_compatible_request_and_reply(wire, monkeypatch):
