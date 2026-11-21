@@ -94,11 +94,12 @@ def assumed(backend):
 
 
 def estimate_tokens(text):
-    """Tokens, roughly, erring high: a digit or a non-ASCII character costs a token, ASCII punctuation half
-    of one, everything else four characters a token (measured 2026-11-20 on Mistral 7B v0.3 and Qwen3.5).
-    Nexus's estimate. On the eight texts measured that day (prose, code, Spanish, mixed languages, JSON,
-    numbers, Japanese) it erred high: real tokens were at most 1.18 times it. It doesn't bound text built to
-    defeat it (rare Unicode a tokenizer splits into bytes, say), and no tokenizer is needed."""
+    """Tokens, roughly: a digit or a non-ASCII character costs a token, ASCII punctuation half of one,
+    everything else four characters a token (measured 2026-11-20 on Mistral 7B v0.3 and Qwen3.5). Nexus's
+    estimate. On the eight texts measured that day (prose, code, Spanish, mixed languages, JSON, numbers,
+    Japanese) real tokens were at most 1.18 times it: it erred high on Qwen3.5 and up to 18% low on Mistral
+    (JSON), inside the quarter that check_fits keeps spare. It doesn't bound text built to defeat it, or a
+    script the tokenizer lacks (rare Unicode it splits into bytes, say), and no tokenizer is needed."""
     digits = sum(c.isdigit() for c in text)
     wide = sum(ord(c) > 127 for c in text)
     punct = sum(c.isascii() and not c.isalnum() and not c.isspace() for c in text)
@@ -117,6 +118,14 @@ def check_fits(messages, context):
 
 def prompt_size(messages):
     return estimate_tokens("".join(m["content"] for m in messages))
+
+
+def answer_room(window, messages):
+    """The most an answer may take where a longer one would shift the start of the prompt out of the window in
+    silence: the window less the prompt's estimate with check_fits's quarter to spare (rounded up), at least 1
+    (0 or less would mean no limit to Ollama). Within the ratios measured (real tokens up to 1.18 times the
+    estimate), the prompt and the whole answer then stay inside the window."""
+    return max(window - (prompt_size(messages) * 5 + 3) // 4, 1)
 
 
 def compare_count(server, messages, counted):
@@ -246,10 +255,10 @@ def whole_number_at(found, *path):
     return found if type(found) is int and found > 0 else None
 
 
-def stopped_short(room, bigger):
-    """The server says the answer stopped at its length limit ("length"): say so, and what to raise."""
+def stopped_short(room, then):
+    """The server says the answer stopped at its length limit: say so, and what to do about it."""
     print(f"WARNING: the answer hit the room left for it ({room}) and stopped there, so it may end part way. "
-          f"End this session, or {bigger}.", file=sys.stderr)
+          f"{then}.", file=sys.stderr)
 
 
 def key_for(name, usual, base_url):
@@ -294,10 +303,11 @@ class Ollama:
 
     def complete(self, messages):
         self.check_version()
-        # The answer gets the room the prompt leaves, at most. An answer that outgrows the window makes
-        # Ollama shift out the start of the prompt (the instructions) mid-answer, saying nothing (Nexus, 20
-        # Nov). The estimate errs high, so this errs short: a long answer stops, and "length" says so.
-        room = max(self.num_ctx - prompt_size(messages), 1)
+        # The answer gets what the prompt leaves of the window, at most. An answer that outgrows the window
+        # makes Ollama shift out the start of the prompt (the instructions) mid-answer, saying nothing (Nexus,
+        # 20 Nov). The estimate can count low (real tokens up to 1.18 times it, measured), so the room keeps
+        # check_fits's quarter spare (answer_room): a long answer stops instead, and "length" says so.
+        room = answer_room(self.num_ctx, messages)
         try:
             out = fetch_json(f"{self.base_url}/api/chat", {
                 "model": self.model, "messages": messages, "stream": False,
@@ -312,8 +322,8 @@ class Ollama:
                   "prompt left almost no room for the reply, which may stop short. End this session, or raise "
                   '"context_tokens" in agent.json.', file=sys.stderr)
         if value_at(out, "done_reason") == "length":
-            stopped_short(f"{room:,} tokens: what the prompt left of the {self.num_ctx:,}-token window",
-                          'raise "context_tokens" in agent.json')
+            stopped_short(f"{room:,} tokens: what the prompt left of the {self.num_ctx:,}-token window, with a "
+                          "quarter of the prompt to spare", 'End this session, or raise "context_tokens" in agent.json')
         return reply_at(out, "message", "content")
 
     def check_version(self):
@@ -351,23 +361,34 @@ class OpenAICompatible:
         return self.reported() or assumed("openai")
 
     def reported(self):
-        """The window the server says it has, or None: vLLM lists each model's max_model_len on /v1/models,
-        and llama.cpp gives its n_ctx on /props, at its root. Each is asked once per run; each is optional."""
+        """The window the server says it has, or None."""
+        return self.server()[1]
+
+    def server(self):
+        """(which server it says it is, its window), or (None, None) if it doesn't say: vLLM lists each model's
+        max_model_len on /v1/models, and llama.cpp gives its n_ctx on /props, at its root. Each is asked once per
+        run (even with context_tokens set, which still wins for the window); each is optional."""
         listed = ask_once(f"{self.base_url}/models", self.headers)
         entries = listed.get("data") if isinstance(listed, dict) else None
         for entry in entries if isinstance(entries, list) else []:
             if isinstance(entry, dict) and entry.get("id") == self.model and whole_number_at(entry, "max_model_len"):
-                return entry["max_model_len"]                                              # vLLM
-        props = ask_once(re.sub(r"/v1$", "", self.base_url) + "/props", self.headers)     # llama.cpp
+                return "vLLM", entry["max_model_len"]
+        props = ask_once(re.sub(r"/v1$", "", self.base_url) + "/props", self.headers)
         found = [whole_number_at(props, "n_ctx"), whole_number_at(props, "default_generation_settings", "n_ctx")]
-        return min([n for n in found if n], default=None)        # both said: the smaller, the safe side
+        window = min([n for n in found if n], default=None)      # both said: the smaller, the safe side
+        return ("llama.cpp", window) if window else (None, None)
 
     def room(self, messages):
-        """The most the answer may take, as for Ollama: what the prompt leaves of a known window (context_tokens
-        in agent.json, or the server's own), at least 1 and at most MOST_ANSWER. None when the window isn't
-        known (Kindling only assumed one): then the server's own limit applies."""
-        known = self.context_tokens or self.reported()
-        return min(max(known - prompt_size(messages), 1), MOST_ANSWER) if known else None
+        """The most the answer may take (max_tokens), or None to send none. Only a server that shifts the start of
+        the prompt out in silence when an answer outgrows its window gets one; of the OpenAI-compatible servers
+        Kindling can tell apart, that is llama.cpp (with context shift on). It gets answer_room of its window
+        (context_tokens in agent.json if you set it, else its own), at most MOST_ANSWER. Every other server gets
+        none, because there a cap does harm: vLLM refuses a prompt plus a cap longer than its window rather than
+        shift, OpenAI's reasoning models reject max_tokens, and other providers' answer limits vary."""
+        kind, window = self.server()
+        if kind != "llama.cpp":
+            return None
+        return min(answer_room(self.context_tokens or window, messages), MOST_ANSWER)
 
     def complete(self, messages):
         room = self.room(messages)
@@ -380,12 +401,14 @@ class OpenAICompatible:
         compare_count("The server", messages, whole_number_at(out, "usage", "prompt_tokens"))
         if value_at(out, "choices", 0, "finish_reason") == "length":
             if room:
-                stopped_short(f"{room:,} tokens: what the prompt left of the window, at most {MOST_ANSWER:,}",
-                              "give the model a bigger window: the server's own (vLLM's --max-model-len, llama.cpp's "
-                              '--ctx-size), and "context_tokens" in agent.json if you set it')
+                stopped_short(f"{room:,} tokens: what the prompt left of llama.cpp's window, with a quarter of the "
+                              f"prompt to spare, at most {MOST_ANSWER:,}", "End this session, or give the model a "
+                              "bigger window: the server's own (llama.cpp's --ctx-size), and \"context_tokens\" in "
+                              "agent.json if you set it")
             else:
-                stopped_short("the server's own limit", 'set "context_tokens" in agent.json to the server\'s window, '
-                              "so Kindling can give the answer all the room the prompt leaves")
+                stopped_short("the server's own limit: Kindling sends this server no limit of its own", "End this "
+                              "session, or give the model more room at the server: a bigger window, or a higher "
+                              "limit for an answer if it has one")
         return reply_at(out, "choices", 0, "message", "content")
 
 

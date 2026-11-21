@@ -445,7 +445,7 @@ MUTANTS = [
     ("vLLM: the entry for this model, not another's", "starter_agent/models.py", [(
         'entry.get("id") == self.model and whole_number_at', "whole_number_at")]),
     ("llama.cpp's n_ctx is the window", "starter_agent/models.py", [(
-        "        return min([n for n in found if n], default=None)", "        return None")]),
+        "        window = min([n for n in found if n], default=None)", "        window = None")]),
     ("llama.cpp's n_ctx under default_generation_settings counts too", "starter_agent/models.py", [(
         ', whole_number_at(props, "default_generation_settings", "n_ctx")]', "]")]),
     ("Anthropic's max_input_tokens is the window", "starter_agent/models.py", [(
@@ -564,19 +564,17 @@ MUTANTS = [
     ("Ollama is asked for an answer no longer than the room left (num_predict)", "starter_agent/models.py", [(
         '"options": {"num_ctx": self.num_ctx, "num_predict": room}}', '"options": {"num_ctx": self.num_ctx}}')]),
     ("num_predict is num_ctx minus the prompt's estimate", "starter_agent/models.py", [(
-        "        room = max(self.num_ctx - prompt_size(messages), 1)", "        room = max(self.num_ctx, 1)")]),
-    ("num_predict is at least 1", "starter_agent/models.py", [(
-        "        room = max(self.num_ctx - prompt_size(messages), 1)", "        room = self.num_ctx - prompt_size(messages)")]),
-    ("an OpenAI-compatible server with a known window gets max_tokens", "starter_agent/models.py", [(
+        "        room = answer_room(self.num_ctx, messages)", "        room = max(self.num_ctx, 1)")]),
+    ("the answer's room is at least 1 (num_predict, max_tokens)", "starter_agent/models.py", [(
+        "    return max(window - (prompt_size(messages) * 5 + 3) // 4, 1)",
+        "    return window - (prompt_size(messages) * 5 + 3) // 4")]),
+    ("llama.cpp, which shifts, gets max_tokens", "starter_agent/models.py", [(
         '**({"max_tokens": room} if room else {})', "**{}")]),
     ("max_tokens is at most the usual maximum", "starter_agent/models.py", [(
-        "min(max(known - prompt_size(messages), 1), MOST_ANSWER) if known", "max(known - prompt_size(messages), 1) if known")]),
-    ("max_tokens is at least 1", "starter_agent/models.py", [(
-        "min(max(known - prompt_size(messages), 1), MOST_ANSWER) if known", "min(known - prompt_size(messages), MOST_ANSWER) if known")]),
-    ("no max_tokens for a window Kindling only assumed", "starter_agent/models.py", [(
-        "        known = self.context_tokens or self.reported()", "        known = self.context_tokens or self.window()")]),
+        "        return min(answer_room(self.context_tokens or window, messages), MOST_ANSWER)",
+        "        return answer_room(self.context_tokens or window, messages)")]),
     ("agent.json's window wins for max_tokens", "starter_agent/models.py", [(
-        "        known = self.context_tokens or self.reported()", "        known = self.reported() or self.context_tokens")]),
+        "answer_room(self.context_tokens or window, messages)", "answer_room(window or self.context_tokens, messages)")]),
     ("the OpenAI-compatible backend is given agent.json's window", "starter_agent/models.py", [(
         "config.api_key_env, config.context_tokens)", "config.api_key_env)")]),
     ("Ollama's 'length' finish is said", "starter_agent/models.py", [(
@@ -589,7 +587,7 @@ MUTANTS = [
     ("llama.cpp's top-level n_ctx counts", "starter_agent/models.py", [(
         '        found = [whole_number_at(props, "n_ctx"), ', "        found = [None, ")]),
     ("/props reporting both n_ctx values: the smaller", "starter_agent/models.py", [(
-        "        return min([n for n in found if n], default=None)", "        return max([n for n in found if n], default=None)")]),
+        "        window = min([n for n in found if n], default=None)", "        window = max([n for n in found if n], default=None)")]),
     ("the Anthropic models GET sends no beta header", "starter_agent/models.py", [(
         '        asked = {name: value for name, value in self.headers.items() if name != "anthropic-beta"}',
         "        asked = self.headers")]),
@@ -602,6 +600,22 @@ MUTANTS = [
         ('"let through a prompt too long for the window.", file=sys.stderr)', '"let through a prompt too long for the window.")')]),
     ("M31 a session that fits whole is read whole, by the whole-prompt check", "starter_agent/curiosity.py", [(
         "    try:\n        check_fits(prompt(mine), context)\n        return mine\n    except PromptTooLong:\n        pass\n", "")]),
+    # --- Round 6: the answer cap only for a server that shifts, with the quarter to spare (CC's call) -----
+    ("no max_tokens to vLLM, which refuses rather than shifts", "starter_agent/models.py", [(
+        '        if kind != "llama.cpp":\n            return None\n', "        if kind is None:\n            return None\n")]),
+    ("vLLM is told apart from llama.cpp", "starter_agent/models.py", [(
+        'return "vLLM", entry["max_model_len"]', 'return "llama.cpp", entry["max_model_len"]')]),
+    ("no max_tokens to OpenAI or a server of unknown kind, even with context_tokens set", "starter_agent/models.py", [(
+        '        if kind != "llama.cpp":\n', '        if kind != "llama.cpp" and not self.context_tokens:\n')]),
+    ("the answer's room keeps a quarter of the prompt's estimate to spare", "starter_agent/models.py", [(
+        "    return max(window - (prompt_size(messages) * 5 + 3) // 4, 1)", "    return max(window - prompt_size(messages), 1)")]),
+    ("the quarter to spare is rounded up", "starter_agent/models.py", [(
+        "(prompt_size(messages) * 5 + 3) // 4", "(prompt_size(messages) * 5) // 4")]),
+    ("Ollama's num_predict keeps the margin", "starter_agent/models.py", [(
+        "        room = answer_room(self.num_ctx, messages)", "        room = max(self.num_ctx - prompt_size(messages), 1)")]),
+    ("llama.cpp's max_tokens keeps the margin", "starter_agent/models.py", [(
+        "min(answer_room(self.context_tokens or window, messages), MOST_ANSWER)",
+        "min(max((self.context_tokens or window) - prompt_size(messages), 1), MOST_ANSWER)")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

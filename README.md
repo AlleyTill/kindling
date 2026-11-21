@@ -241,8 +241,9 @@ rest of the prompt (this session, the beliefs, the instructions), minus room for
 the context, at least 1,024 tokens). With under about 1,000 tokens left, recall is skipped and you're told.
 Tokens are estimated without a tokenizer: four characters a token for words, half a token for each
 punctuation mark, and a whole token for each digit or non-ASCII character. Nexus measured it on 20 November
-2026: on prose, code, Spanish, mixed languages, JSON, numbers and Japanese it erred high, but it is no bound
-on text built to defeat it.
+2026, on prose, code, Spanish, mixed languages, JSON, numbers and Japanese: it erred high on Qwen3.5, and up
+to 18% low on Mistral 7B v0.3 (real tokens at most 1.18 times it, on JSON), inside the quarter Kindling keeps
+spare. It is no bound on text built to defeat it, or on text in a script the tokenizer lacks.
 
 Before anything is sent, the whole prompt is checked against the context with a quarter to spare, and one
 too long is refused with a message. Ollama is also asked to refuse one itself (`"truncate": false`), and its
@@ -262,12 +263,21 @@ reuse, but a cut looks the same: Nexus found that a prompt Ollama cut counts abo
 a cut is possible (an assumed window, or an Ollama older than 0.32.1), it is also printed, once, as a
 possible cut. And a count near Ollama's window warns you that the prompt left almost no room for the reply.
 
-The answer gets the room the prompt leaves, and no more: Kindling asks Ollama for at most that many tokens
-(`num_predict`), and an OpenAI-compatible server too when its window is known (`max_tokens`, at most
-16,000). Nexus found that an answer which outgrows the window makes Ollama shift the start of the prompt
-(the instructions) out of it mid-answer, saying nothing. Now a long answer stops at the room left instead,
-and Kindling tells you, and which setting to raise. Ollama can also be told not to shift (`"shift": false`),
-but "shift" is a load-time setting, so a shared Ollama reloads if callers differ.
+**Only a server that shifts gets a limit on the answer.** Nexus found that an answer which outgrows the
+window makes Ollama shift the start of the prompt (the instructions) out of it mid-answer, saying nothing;
+llama.cpp's server does the same with context shift on. So Kindling asks those two for no more than the
+window less the prompt's estimate, with the length check's quarter to spare: Ollama with `num_predict`, and
+llama.cpp (when it reports its window on `/props`) with `max_tokens`, at most 16,000. Within the ratios Nexus
+measured (real tokens up to 1.18 times the estimate), the prompt and the whole answer then stay inside the
+window, so a long answer stops instead of pushing the instructions out, and Kindling tells you, and which
+setting to raise. Past those ratios, a long answer can still shift the prompt. Every other server gets no
+limit, because there one does harm: vLLM refuses a request whose prompt plus limit is longer than its window
+(it never shifts), OpenAI's reasoning models reject `max_tokens`, and other providers' answer limits vary. An
+Ollama reached through its OpenAI-compatible address (`/v1`) can't be told apart, so it gets no limit there:
+use the `ollama` backend. To know which server it's talking to, Kindling asks an OpenAI-compatible server
+once per run, even with `context_tokens` set. When any server stops an answer at its own limit, Kindling says
+so. Ollama can also be told not to shift (`"shift": false`), but "shift" is a load-time setting, so a shared
+Ollama reloads if callers differ.
 
 A session is never cut in half, so a session bigger than the budget is never recalled, and a 30-turn day
 with real replies can be that big. **`chat` and `recall` name a session when its size, not its rank, kept it
