@@ -352,3 +352,21 @@ def test_curiosity_15_a_session_that_fits_is_read_whole_with_no_note(make_agent)
     agent.config.context_tokens = room_for(mine, newest=9) * 2           # all ten fit
     agent.end_session()
     assert seen == [[t["id"] for t in mine]] and agent.notes == [] and part_rows(agent.store) == []
+
+
+def test_curiosity_16_a_session_that_fits_whole_is_read_whole_though_its_turns_priced_one_by_one_dont(make_agent):
+    """The round-5 verifier's M31: pricing turn by turn errs high (each turn's estimate rounds up), so a session
+    that fits as one prompt is read whole, by the whole-prompt check, with no note."""
+    from starter_agent.models import estimate_tokens, prompt_size
+    from starter_agent.recall import turn_line
+    seen = []
+    agent = make_agent(fn=scripted([], lambda prompt: seen.append(sorted(agent_turns(prompt))) or '{"questions": []}'))
+    sid, _ = add_session(agent.store, [("user", "go"), ("agent", "a")] * 40)
+    mine = [t for t in agent.store.turns(sid) if t["role"] == "agent"]
+    context = prompt_size(curiosity.prompt(mine)) * 5 // 4                     # the whole prompt just fits
+    priced = estimate_tokens(curiosity.SYSTEM) + sum(estimate_tokens(turn_line(t) + "\n") for t in mine)
+    assert priced * 5 // 4 > context                                            # the fixture: one by one, they don't
+    assert curiosity.newest_that_fit(mine, context) == mine
+    agent.config.context_tokens = context
+    agent.end_session()
+    assert seen == [[t["id"] for t in mine]] and agent.notes == [] and part_rows(agent.store) == []

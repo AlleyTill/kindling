@@ -209,6 +209,18 @@ def test_a_server_that_cant_say_gets_the_usual_window_said_once(wire, capsys, fa
     assert [url for url, _ in wire.asked] == [f"{VLLM}/models", "http://localhost:8000/props"]   # once each
 
 
+@pytest.mark.parametrize("name, facts", [
+    ("openai", {f"{VLLM}/models": {"data": [{"id": "m", "max_model_len": True}]}}),
+    ("openai", {"http://localhost:8000/props": {"n_ctx": True}}),
+    ("anthropic", {"https://api.anthropic.com/v1/models/claude-opus-5-5": {"max_input_tokens": True}})],
+    ids=["vLLM", "llama.cpp", "Anthropic"])
+def test_a_window_reported_as_true_is_not_a_one_token_window(wire, monkeypatch, name, facts):
+    """The round-5 verifier's V14: true is an int to Python, and a 1-token window would refuse every prompt."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    settings = {"backend": "anthropic", "model": "", "base_url": ""} if name == "anthropic" else {}
+    assert window_of(wire, facts, **settings) == models.CONTEXT[name]          # not said: the usual one, assumed
+
+
 def test_anthropic_says_its_window_asked_with_a_messages_key_and_version_but_no_beta_header(wire, monkeypatch,
                                                                                             capsys):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
@@ -353,6 +365,17 @@ def test_a_count_far_over_the_estimate_is_printed_and_one_far_under_only_logged(
 
 def err_name(name):
     return {"ollama": "Ollama", "openai": "The server", "anthropic": "Anthropic"}[name]
+
+
+@pytest.mark.parametrize("name", COUNTED)
+def test_a_count_far_over_the_estimate_is_printed_each_time_not_once_per_run(wire, capsys, monkeypatch, name):
+    """The round-5 verifier's M1: CC's rule prints the side that can let a prompt too long through at every call."""
+    model = backend(wire, monkeypatch, name)
+    for counted in (1300, 1400, 1300):
+        wire.reply = COUNTED[name](counted)
+        assert model.complete(PROSE) == "ok"
+    err = capsys.readouterr().err
+    assert err.count("over a quarter more") == 3 and err.count("counted 1,300 prompt tokens") == 2, err
 
 
 @pytest.mark.parametrize("risk", ["an assumed window", "an Ollama older than 0.32.1"])

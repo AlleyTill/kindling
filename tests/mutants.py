@@ -593,6 +593,15 @@ MUTANTS = [
     ("the Anthropic models GET sends no beta header", "starter_agent/models.py", [(
         '        asked = {name: value for name, value in self.headers.items() if name != "anthropic-beta"}',
         "        asked = self.headers")]),
+    # --- Round 6: the round-5 verifier's surviving mutants, each now with a test --------------------------
+    ("V14 a window reported as true is not a 1-token window", "starter_agent/models.py", [(
+        "    return found if type(found) is int and found > 0 else None",
+        "    return found if isinstance(found, int) and found > 0 else None")]),
+    ("M1 a count far over the estimate is printed each time, not once per run", "starter_agent/models.py", [
+        ('        print(f"Note: {said}, over a quarter more.', '        note_once(key="more", text=f"Note: {said}, over a quarter more.'),
+        ('"let through a prompt too long for the window.", file=sys.stderr)', '"let through a prompt too long for the window.")')]),
+    ("M31 a session that fits whole is read whole, by the whole-prompt check", "starter_agent/curiosity.py", [(
+        "    try:\n        check_fits(prompt(mine), context)\n        return mine\n    except PromptTooLong:\n        pass\n", "")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),
