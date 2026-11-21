@@ -478,6 +478,27 @@ MUTANTS = [
         "return chosen, named if chosen else skipped", "return chosen, named + skipped")]),
     ("V23 c: when nothing fit, the session is named", "starter_agent/recall.py", [(
         "return chosen, named if chosen else skipped", "return chosen, named")]),
+    # --- Round 5: the round-4 verifier's surviving mutants, each now with a test -------------------------
+    ("V1 a lone punctuation mark costs half a token, rounded up", "starter_agent/models.py", [(
+        "+ (punct + 1) // 2", "+ punct // 2")]),
+    ("V2 a Latin-1 letter is non-ASCII: a whole token", "starter_agent/models.py", [(
+        "wide = sum(ord(c) > 127 for c in text)", "wide = sum(ord(c) > 255 for c in text)")]),
+    ("V3 Ollama 0.32.0 is named as older than 0.32.1", "starter_agent/models.py", [(
+        "        elif parts < OLLAMA_TESTED:", "        elif parts[:2] < OLLAMA_TESTED[:2]:")]),
+    ("V5 every session left out above a packed one is named, across several packed ones", "starter_agent/recall.py", [(
+        "            named += skipped ", "            named = list(skipped) ")]),
+    ("V6 when nothing fits, every session left out is named", "starter_agent/recall.py", [(
+        "return chosen, named if chosen else skipped", "return chosen, named if chosen else skipped[:1]")]),
+    ("V7 recall's budget is sized from the server's window", "starter_agent/agent.py", [(
+        "        context = context_of(self.config, self.model)\n", "        context = context_of(self.config)\n")]),
+    ("V8 curiosity's length check uses the server's window", "starter_agent/curiosity.py", [(
+        "context_of(config, model)", "context_of(config)")]),
+    ("V10 a server that can't be reached for a question gives None, not a crash", "starter_agent/models.py", [(
+        "        except (ModelError, OSError, ValueError):", "        except (ModelError, ValueError):")]),
+    ("V11 a question to a server is a GET", "starter_agent/models.py", [(
+        'method="GET" if body is None else "POST",', 'method="POST",')]),
+    ("V12 the length check counts the whole prompt, the system message too", "starter_agent/models.py", [(
+        "    size = prompt_size(messages)\n", "    size = prompt_size(messages[1:])\n")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

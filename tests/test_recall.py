@@ -237,6 +237,10 @@ V23 = {
     "c: the only session, too big: named": ([("big", .9, 700)], 400, [], ["big"]),
     "B: fits the budget, not what was left, above one that got in: named": (
         [("A", .9, 500), ("B", .8, 400), ("C", .7, 100)], 720, ["A", "C"], ["B"]),
+    "V5: two too big, each above a packed one: both named": (            # the round-4 verifier's V5
+        [("big1", .9, 700), ("s1", .8, 100), ("big2", .7, 700), ("s2", .6, 100)], 400, ["s1", "s2"], ["big1", "big2"]),
+    "V6: nothing fits among three: all three named": (                    # the round-4 verifier's V6
+        [("x", .9, 700), ("y", .8, 600), ("z", .7, 500)], 400, [], ["x", "y", "z"]),
 }
 
 

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import Clock
+from conftest import Clock, add_session
 from starter_agent import models
 from starter_agent.agent import Agent
 from starter_agent.config import Config
@@ -45,17 +45,24 @@ class Answer(BytesIO):
 def wire(monkeypatch):
     """Stands in for every server at urllib's own door, so no request leaves this computer. Each POST is
     recorded in .sent as (url, body, headers) and answered with .reply, or refused with .refusal = (HTTP
-    status, body). Each GET is recorded in .asked as (url, headers) and answered with .facts[url], or with
-    HTTP 404 if there's none. Header names are lower case."""
-    line = SimpleNamespace(reply=None, refusal=None, facts={}, sent=[], asked=[])
+    status, body). Each GET is recorded in .asked as (url, headers) and answered with .facts[url] (raised, if
+    it is an exception), or with HTTP 404 if there's none. Every method is recorded in .methods, read from
+    the request itself: a GET carries no body and a POST always does. Header names are lower case."""
+    line = SimpleNamespace(reply=None, refusal=None, facts={}, sent=[], asked=[], methods=[])
 
     def open_(opener, request, timeout=None):
         url, headers = request.full_url, {k.lower(): v for k, v in request.header_items()}
-        if request.data is None:
+        method = request.get_method()
+        line.methods.append(method)
+        if method == "GET":
+            assert request.data is None, f"a GET with a body: {url}"
             line.asked.append((url, headers))
             if url not in line.facts:
                 raise urllib.error.HTTPError(url, 404, "Not Found", {}, BytesIO(b"404 page not found"))
+            if isinstance(line.facts[url], BaseException):
+                raise line.facts[url]
             return Answer(json.dumps(line.facts[url]).encode())
+        assert method == "POST" and request.data is not None, f"a {method} with no body: {url}"
         line.sent.append((url, json.loads(request.data), headers))
         if line.refusal:
             status, body = line.refusal
@@ -136,6 +143,7 @@ def test_ollamas_refusal_mid_chat_keeps_nothing_and_says_why(wire, tmp_path):
 @pytest.mark.parametrize("facts, said", [
     ({"version": "0.32.1"}, None), ({"version": "0.40.0"}, None),     # the version tested, or newer: silent
     ({"version": "0.31.9"}, "this Ollama is 0.31.9, older than 0.32.1"),
+    ({"version": "0.32.0"}, "this Ollama is 0.32.0, older than 0.32.1"),   # the patch number counts (r4 V3)
     ({"version": "0.5.7-rc1"}, "this Ollama is 0.5.7-rc1, older than 0.32.1"),
     (None, "couldn't read this Ollama's version"),                     # no /api/version: HTTP 404
     ({"version": 7}, "couldn't read this Ollama's version")])
@@ -234,6 +242,64 @@ def test_the_servers_window_sizes_the_length_check(wire, tmp_path):
     error = outcome(agent.handle, "a long paste " * 600)               # ~2,000 tokens: under 16,384, over 2,048
     assert isinstance(error, PromptTooLong) and "2,048-token" in str(error), error
     assert wire.sent == []                                             # refused before it was sent
+
+
+# --- Round 5: a test for each mutant the round-4 verifier found surviving (V1 to V12; V9 was caught) ---------
+
+def openai_agent(wire, tmp_path, facts, **settings):
+    wire.facts.update(facts)
+    config = Config(**{"db": str(tmp_path / "agent.db"), "backend": "openai", "model": "m", "base_url": VLLM,
+                       **settings})
+    return Agent(Store(config.db, Clock()), models.make_model(config), HashEmbedder(), config)
+
+
+def test_recalls_budget_is_sized_from_the_servers_window(wire, tmp_path):
+    """V7. vLLM at 4,096: a past session of ~3,000 tokens fits the 8,000 budget but not the room 4,096 leaves,
+    so it is skipped and named and the turn goes through. Sized from the usual 16,384, it would be packed,
+    and the whole turn refused."""
+    agent = openai_agent(wire, tmp_path, {f"{VLLM}/models": {"data": [{"id": "m", "max_model_len": 4096}]}})
+    big, _ = add_session(agent.store, [("user", "tell me about mice " + "z" * 12000)])
+    wire.reply = {"choices": [{"message": {"content": "ok"}}]}
+    assert outcome(agent.handle, "mice?") == "ok"
+    assert any(f"recall skipped session {big}" in note for note in agent.notes), agent.notes
+
+
+def test_curiosity_never_sends_a_prompt_too_long_for_the_servers_window(wire, tmp_path):
+    """V8. llama.cpp at 2,048: a session of ~3,000 tokens of agent turns fits the usual 16,384, not 2,048."""
+    agent = openai_agent(wire, tmp_path, {"http://localhost:8000/props": {"n_ctx": 2048}})
+    add_session(agent.store, [("user", "go"), ("agent", "word " * 400)] * 6)
+    wire.reply = {"choices": [{"message": {"content": '{"questions": []}'}}]}
+    agent.end_session()
+    sizes = [models.prompt_size(body["messages"]) for _, body, _ in wire.sent]
+    assert all(size * 5 // 4 <= 2048 for size in sizes), sizes
+
+
+@pytest.mark.parametrize("failure", [urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+                                     TimeoutError("timed out")], ids=["refused", "timed out"])
+def test_a_server_that_cant_be_reached_for_a_question_gives_no_answer_never_a_crash(wire, failure):
+    """V10: a question about the server (its version, its window) that can't connect is optional, like one
+    the server can't answer; the turn goes on."""
+    for url in (OLLAMA_VERSION, f"{VLLM}/models", "http://localhost:8000/props"):
+        wire.facts[url] = failure
+    wire.reply = {"message": {"content": "ok"}}
+    assert outcome(Ollama().complete, MESSAGES) == "ok"
+    assert outcome(window_of, wire, {}) == 16384
+
+
+def test_every_question_to_a_server_is_a_get_and_every_message_a_post(wire):
+    """V11: sent as a POST, each question would get HTTP 405 from a real server and quietly fall back."""
+    wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+    wire.reply = {"message": {"content": "ok"}}
+    assert outcome(Ollama().complete, MESSAGES) == "ok"
+    assert outcome(window_of, wire, {"http://localhost:8000/props": {"n_ctx": 3072}}) == 3072
+    assert wire.methods == ["GET", "POST", "GET", "GET"]               # version, chat, /models, /props
+
+
+def test_the_length_check_counts_the_system_prompt_too():
+    """V12: the instructions take room in the window like everything else."""
+    long_system = [{"role": "system", "content": "x" * 4000}, {"role": "user", "content": "hi"}]   # ~1,000
+    assert check_fits(long_system, 1300) is None
+    assert isinstance(outcome(check_fits, long_system, 1000), PromptTooLong)
 
 
 # --- After each call, the server's own count checks the estimate: a miss is logged, never read as a cut -------
@@ -421,6 +487,12 @@ def test_the_estimate_is_never_below_four_characters_a_token(kind, text):
     assert new >= old and new >= whole, (kind, new, old, whole)
     assert estimate_tokens(text + "7") == new + 1                     # one more digit, one more token
     assert estimate_tokens(text + "語") == new + 1                    # one more non-ASCII character, too
+
+
+def test_a_lone_punctuation_mark_costs_and_an_accented_letter_is_a_whole_token():
+    """The round-4 verifier's V1 and V2: half a token per mark rounds UP, and Latin-1 (128 to 255) is non-ASCII."""
+    assert estimate_tokens(".") == 1 and estimate_tokens("...") == 2
+    assert estimate_tokens("é" * 100) == estimate_tokens("ñ" * 100) == 100
 
 
 def test_digits_and_non_ascii_characters_are_whole_tokens_and_letters_four_a_token():
