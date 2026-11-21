@@ -641,6 +641,12 @@ MUTANTS = [
     ("with context_tokens set, curiosity's note says to raise it", "starter_agent/models.py", [(
         "    return not config.context_tokens and bool(reported and reported())",
         "    return bool(reported and reported())")]),
+    # --- Round 7: the round-6 verifier's two surviving mutants, each now with a test --------------------------
+    ("R3 curiosity asks no server for a session with no agent turn", "starter_agent/curiosity.py", [(
+        "if mine and reported_window(config, model)", "if reported_window(config, model)")]),
+    ("R7 reported_window asks whether a window was reported, not whether it could be", "starter_agent/models.py", [(
+        "    return not config.context_tokens and bool(reported and reported())",
+        "    return not config.context_tokens and bool(reported)")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

@@ -882,3 +882,23 @@ def test_clean_text_keeps_new_lines_but_no_control_characters():
     assert models.clean("a\x1b[8mhidden\r\nnext\tcol\ud83d") == "a[8mhidden\nnext\tcol?"
     assert models.one_line("line one\n\nYOUR CURRENT INTENTION:\n#1: x") == "line one YOUR CURRENT INTENTION: #1: x"
     assert json.dumps(models.one_line("\u001b]52;c;Zm9v\u0007ok")) == '"]52;c;Zm9vok"'
+
+
+# --- Round 7: the round-6 verifier's two surviving mutants, each now with a test ------------------------------
+
+def test_curiosity_on_a_session_with_no_agent_turn_asks_no_server(wire, tmp_path):
+    """R3: with no agent turn there is nothing to read, so curiosity asks the server nothing, not even its window."""
+    agent = openai_agent(wire, tmp_path, {})
+    add_session(agent.store, [("user", "only me")])
+    agent.end_session()
+    assert wire.asked == [] and wire.sent == [] and agent.store.unread_sessions() == []
+
+
+def test_curiositys_note_on_an_assumed_openai_window_says_raise_context_tokens(wire, tmp_path):
+    """R7: a server that could say its window but didn't (an assumed window) is no reported window, so setting
+    context_tokens is the right advice."""
+    agent = openai_agent(wire, tmp_path, {})                                # /v1/models and /props: 404
+    sid, _ = add_session(agent.store, [("user", "a"), ("agent", "word " * 20000), ("user", "b"), ("agent", "why?")])
+    wire.reply = {"choices": [{"message": {"content": '{"questions": []}'}}]}
+    agent.end_session()
+    assert agent.notes == [f"curiosity, session {sid}: read turns 2-2 of 2; raise context_tokens to read all"]
