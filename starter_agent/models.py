@@ -274,20 +274,26 @@ def key_for(name, usual, base_url):
 OLLAMA_TESTED = (0, 32, 1)       # the Ollama that "truncate": false was tested on (Nexus, 20 Nov 2026)
 
 
+# vLLM's words for a prompt too long: "This model's maximum context length is N tokens. However, you requested
+# M tokens ..." (newer: "... your request has M input tokens"), at the top level or under "error".
+VLLM_TOO_LONG = re.compile(r"maximum context length is (\d+) tokens\b.*?(?:you requested|your request has) (\d+)", re.S)
+
+
 def refusal(server, error, bigger):
     """A server's refusal of a prompt longer than its window, as PromptTooLong quoting the server's own count;
     None for any other error. Ollama refuses because Kindling asks it to ("truncate": false); llama.cpp's own
-    server refuses one too, with the numbers under "error". It is one only if it is an HTTP 400 that names
-    exceed_context_size_error or gives both counts (n_prompt_tokens and n_ctx). `bigger`: how to give the
-    model a bigger window."""
+    server refuses one too, with the numbers under "error"; vLLM says it in words (VLLM_TOO_LONG). It is one
+    only if it is an HTTP 400 that names exceed_context_size_error, gives both counts (n_prompt_tokens and
+    n_ctx), or says vLLM's words with both numbers. `bigger`: how to give the model a bigger window."""
     said = parse_json(error.said)
     said = said if isinstance(said, dict) else {}
     nested = said["error"] if isinstance(said.get("error"), dict) else {}
     counts = next((found for found in (said, nested) if {"n_prompt_tokens", "n_ctx"} <= found.keys()), None)
-    if error.status != 400 or not (counts or "exceed_context_size_error" in error.said):
+    vllm = VLLM_TOO_LONG.search(error.said)
+    if error.status != 400 or not (counts or vllm or "exceed_context_size_error" in error.said):
         return None
     what = (f"{counts['n_prompt_tokens']} tokens by its own count, for its {counts['n_ctx']}-token window" if counts
-            else error.said[:300])
+            else f"{vllm[2]} tokens by its own count, for its {vllm[1]}-token window" if vllm else error.said[:300])
     return PromptTooLong(f"{server} refused the prompt as too long: {what}. Nothing was cut or answered. End this "
                          f"session (/end, or `session end`), or {bigger}")
 

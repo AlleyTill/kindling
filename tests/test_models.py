@@ -579,11 +579,24 @@ LLAMA_TOO_LONG = {"error": {"code": 400, "message": "the request exceeds the ava
                             "it", "type": "exceed_context_size_error", "n_prompt_tokens": 5120, "n_ctx": 4096}}
 
 
+# vLLM's 400 for a prompt too long, in its words (vLLM's own source, as we know it; not measured here)
+VLLM_SAID = ("This model's maximum context length is 4096 tokens. However, you requested 5000 tokens (4000 in the "
+             "messages, 1000 in the completion). Please reduce the length of the messages or completion.")
+VLLM_TOO_LONG = {"object": "error", "message": VLLM_SAID, "type": "BadRequestError", "param": None, "code": 400}
+
+
 @pytest.mark.parametrize("body, quoted", [
     (LLAMA_TOO_LONG, "5120 tokens by its own count, for its 4096-token window"),          # llama.cpp: under "error"
     (TOO_LONG, "1757 tokens by its own count, for its 256-token window"),                 # Ollama's, passed on by /v1
-    ({"error": {"type": "exceed_context_size_error", "message": "too long"}}, "exceed_context_size_error")],
-    ids=["llama.cpp", "Ollama's /v1", "the error type alone"])
+    ({"error": {"type": "exceed_context_size_error", "message": "too long"}}, "exceed_context_size_error"),
+    (VLLM_TOO_LONG, "5000 tokens by its own count, for its 4096-token window"),           # vLLM, with a max_tokens
+    ({**VLLM_TOO_LONG, "message": "This model's maximum context length is 4096 tokens. However, you requested 4600 "
+      "tokens in the messages, Please reduce the length of the messages."},              # vLLM, without one
+     "4600 tokens by its own count, for its 4096-token window"),
+    ({"error": {"message": "This model's maximum context length is 2048 tokens. However, your request has 2100 input "
+                "tokens. Please reduce the length of the input messages.", "type": "BadRequestError", "code": 400}},
+     "2100 tokens by its own count, for its 2048-token window")],                          # newer vLLM, under "error"
+    ids=["llama.cpp", "Ollama's /v1", "the error type alone", "vLLM", "vLLM, no max_tokens", "newer vLLM"])
 def test_an_openai_compatible_servers_400_for_a_prompt_too_long_is_prompt_too_long(wire, body, quoted):
     wire.refusal = (400, body)
     error = outcome(OpenAICompatible("m", VLLM).complete, MESSAGES)
@@ -593,29 +606,34 @@ def test_an_openai_compatible_servers_400_for_a_prompt_too_long_is_prompt_too_lo
 
 @pytest.mark.parametrize("status, body", [
     (400, {"object": "error", "message": "This model's maximum context length is 4096 tokens.", "code": 400}),
-    (500, LLAMA_TOO_LONG)])
+    (400, {"object": "error", "message": "The model `m` does not exist.", "type": "NotFoundError", "code": 400}),
+    (500, LLAMA_TOO_LONG), (500, VLLM_TOO_LONG), (413, VLLM_TOO_LONG)],
+    ids=["vLLM's window alone, no count", "another 400", "llama.cpp's body, 500", "vLLM's words, 500", "vLLM's, 413"])
 def test_any_other_openai_compatible_refusal_stays_a_plain_model_error(wire, status, body):
     wire.refusal = (status, body)
     error = outcome(OpenAICompatible("m", VLLM).complete, MESSAGES)
     assert isinstance(error, ModelError) and not isinstance(error, PromptTooLong), error
 
 
-def test_a_servers_refusal_during_curiosity_skips_that_session_and_reads_the_rest(wire, tmp_path):
-    """Before, llama.cpp's refusal was a plain error: curiosity stopped there, left every later session unread,
-    and stopped there again at each session end."""
+@pytest.mark.parametrize("body, quoted", [(LLAMA_TOO_LONG, "5120 tokens by its own count, for its 4096-token window"),
+                                          (VLLM_TOO_LONG, "5000 tokens by its own count, for its 4096-token window")],
+                         ids=["llama.cpp", "vLLM"])
+def test_a_servers_refusal_during_curiosity_skips_that_session_and_reads_the_rest(wire, tmp_path, body, quoted):
+    """Before, a refusal from llama.cpp (r4) or vLLM (r5) was a plain error: curiosity stopped there, left every
+    later session unread, and stopped there again at each session end."""
     agent = openai_agent(wire, tmp_path, {}, context_tokens=4096)
     add_session(agent.store, [("user", "go"), ("agent", "the long one")])
     small, _ = add_session(agent.store, [("user", "hi"), ("agent", "why is the sky blue?")])
-    wire.refusal = lambda body: (400, LLAMA_TOO_LONG) if "the long one" in body["messages"][-1]["content"] else None
+    wire.refusal = lambda sent: (400, body) if "the long one" in sent["messages"][-1]["content"] else None
     wire.reply = {"choices": [{"message": {"content": '{"questions": []}'}}]}
     agent.end_session()
-    read = [body["messages"][-1]["content"] for _, body, _ in wire.sent]
+    read = [sent["messages"][-1]["content"] for _, sent, _ in wire.sent]
     assert len(read) == 2 and "why is the sky blue?" in read[1], read          # the next session was still read
     assert agent.store.unread_sessions() == []                                 # both marked read
     assert agent.notes == ["curiosity, session 1: read no turns of 1: the server refused turns 1-1 as too long "
                            "for its window (see: log)"]
     reason = only(agent.store.db.execute("SELECT reason FROM log WHERE kind='curiosity read part'"))[0]
-    assert "5120 tokens by its own count, for its 4096-token window" in reason
+    assert quoted in reason
     agent.end_session()
     assert len(wire.sent) == 2 and len(agent.notes) == 1                       # nothing repeats at the next end
 

@@ -432,7 +432,7 @@ MUTANTS = [
     ("only a 400 is read as Ollama's refusal", "starter_agent/models.py", [(
         "if error.status != 400 or not (", "if not (")]),
     ("Ollama's error type alone is enough", "starter_agent/models.py", [(
-        'not (counts or "exceed_context_size_error" in error.said)', "not counts")]),
+        'not (counts or vllm or "exceed_context_size_error" in error.said)', "not (counts or vllm)")]),
     ("a server is asked about itself once per run", "starter_agent/models.py", [(
         "    if url not in ASKED:", "    if True:")]),
     ("a note is printed once per run", "starter_agent/models.py", [("    if key not in TOLD:", "    if True:")]),
@@ -616,6 +616,17 @@ MUTANTS = [
     ("llama.cpp's max_tokens keeps the margin", "starter_agent/models.py", [(
         "min(answer_room(self.context_tokens or window, messages), MOST_ANSWER)",
         "min(max((self.context_tokens or window) - prompt_size(messages), 1), MOST_ANSWER)")]),
+    # --- Round 6: vLLM's 400 for a prompt too long is PromptTooLong (CC's call) ---------------------------
+    ("vLLM's 400 for a prompt too long is PromptTooLong", "starter_agent/models.py", [(
+        'not (counts or vllm or "exceed', 'not (counts or "exceed')]),
+    ("that PromptTooLong quotes vLLM's window and count", "starter_agent/models.py", [(
+        'else f"{vllm[2]} tokens by its own count, for its {vllm[1]}-token window" if vllm',
+        'else "a prompt too long" if vllm')]),
+    ("vLLM's count and window go in the right places", "starter_agent/models.py", [(
+        'f"{vllm[2]} tokens by its own count, for its {vllm[1]}-token window"',
+        'f"{vllm[1]} tokens by its own count, for its {vllm[2]}-token window"')]),
+    ("newer vLLM's words count too", "starter_agent/models.py", [(
+        "(?:you requested|your request has)", "(?:you requested)")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

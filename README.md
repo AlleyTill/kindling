@@ -248,8 +248,8 @@ spare. It is no bound on text built to defeat it, or on text in a script the tok
 Before anything is sent, the whole prompt is checked against the context with a quarter to spare, and one
 too long is refused with a message. Ollama is also asked to refuse one itself (`"truncate": false`), and its
 refusal comes back as the same message, with Ollama's own count; so does the same refusal from an
-OpenAI-compatible server (llama.cpp's, say), and curiosity then skips that session rather than stopping
-there. **So a prompt is never cut in silence on
+OpenAI-compatible server (llama.cpp's or vLLM's, with the server's own numbers), and curiosity then skips
+that session rather than stopping there. **So a prompt is never cut in silence on
 Ollama 0.32.1 or later, or on a server that reports its window** (unless you set `context_tokens` above it).
 Elsewhere it can be: an older Ollama may ignore `"truncate": false`, and a server that doesn't report its
 window may have a smaller one than Kindling assumes; either may cut a long prompt without saying so.
