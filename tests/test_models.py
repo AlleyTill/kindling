@@ -1,10 +1,12 @@
 """The model backends, offline: what each one sends and where, what it does with a reply it can't use, and
 how the agent reads what a model wrote. A fake urlopen stands in for every server; no request leaves."""
 import json
+import re
 import socket
 import time
 import urllib.error
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +18,7 @@ from starter_agent.config import Config
 from starter_agent.embed import HashEmbedder
 from starter_agent.models import (Anthropic, ModelError, Ollama, OpenAICompatible, PromptTooLong, check_fits,
                                   estimate_tokens, split_json)
+from starter_agent.recall import Recalled
 from starter_agent.store import Store
 
 MESSAGES = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}]
@@ -882,6 +885,88 @@ def test_clean_text_keeps_new_lines_but_no_control_characters():
     assert models.clean("a\x1b[8mhidden\r\nnext\tcol\ud83d") == "a[8mhidden\nnext\tcol?"
     assert models.one_line("line one\n\nYOUR CURRENT INTENTION:\n#1: x") == "line one YOUR CURRENT INTENTION: #1: x"
     assert json.dumps(models.one_line("\u001b]52;c;Zm9v\u0007ok")) == '"]52;c;Zm9vok"'
+
+
+# --- Round 7: with recall at its budget, the answer keeps its quarter (r6 verifier's MEDIUM; CC's call) ---------
+# Recall kept the prompt to the window less the answer's quarter, but the answer's limit (answer_room) takes the
+# prompt's estimate with a quarter to spare, so with recall full num_predict fell to a sixteenth of the window
+# (256 at 4,096). Recall's room now goes through the same 5/4: (window - the answer's quarter) * 4/5.
+
+class Full:
+    """A retriever at its limit: it hands back exactly the budget it is given, in estimated tokens."""
+    budget = None
+
+    def recall(self, query, budget_tokens):
+        self.budget = budget_tokens
+        return Recalled("y" * (4 * budget_tokens), [], "by hand")
+
+
+def agent_on(wire, tmp_path, server, window, memory=None, **settings):
+    """An agent on Ollama (its window: context_tokens) or llama.cpp (its window: n_ctx on /props), answering 'ok'."""
+    if server == "ollama":
+        wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+        wire.reply = {"message": {"content": "ok"}, "done_reason": "stop"}
+        settings = {"backend": "ollama", "context_tokens": window, **settings}
+    else:
+        wire.facts[LLAMA_PROPS] = {"n_ctx": window}
+        wire.reply = {"choices": [{"message": {"content": "ok"}}]}
+        settings = {"backend": "openai", "model": "m", "base_url": VLLM, **settings}
+    config = Config(db=str(tmp_path / f"{server}-{window}.db"), **settings)
+    return Agent(Store(config.db, Clock()), models.make_model(config), HashEmbedder(), config, memory=memory)
+
+
+def sent_last(wire):
+    """(the prompt's estimate, the answer's limit) of the last message sent: num_predict, or max_tokens."""
+    body = wire.sent[-1][1]
+    return models.prompt_size(body["messages"]), body["options"]["num_predict"] if "options" in body else body.get(
+        "max_tokens")
+
+
+def share_of(window):
+    """The most of the window recall fills the prompt to (CC's call): (window - the answer's quarter) * 4/5."""
+    return (window - max(window // 4, 1024)) * 4 // 5
+
+
+@pytest.mark.parametrize("window", [4096, 12288, 32768, 3000])
+@pytest.mark.parametrize("server", ["ollama", "llama.cpp"])
+def test_with_recall_at_its_budget_the_answer_keeps_a_quarter_of_the_window(wire, tmp_path, server, window):
+    full = Full()
+    agent = agent_on(wire, tmp_path, server, window, memory=full, recall_budget_tokens=10**6)   # the room binds
+    assert agent.handle("why do the mice lose weight?") == "ok"
+    size, room = sent_last(wire)
+    assert full.budget > 1000 and share_of(window) - 3 <= size <= share_of(window), (full.budget, size)  # it's full
+    assert room >= window // 4 and room >= 1024, (room, window)            # a quarter, and at least 1,024
+
+
+@pytest.mark.parametrize("window", [4096, 12288, 32768])
+def test_with_whole_sessions_recalled_the_answer_keeps_its_quarter(wire, tmp_path, window):
+    """The r6 verifier's reproduction, with the real recall: sessions it can fill its budget from, and a long
+    current session. Round 6 sent num_predict 406 at 4,096, and a 600-token reply stopped part way."""
+    agent = agent_on(wire, tmp_path, "ollama", window, recall_budget_tokens=10**6)
+    for n in range(70):
+        add_session(agent.store, [("user", f"the mice in cage {n} lost weight " + "mice weight cage " * 60),
+                                  ("agent", "noted " * 40)])
+    sid = agent.store.start_session()
+    for n in range(window // 1024):
+        agent.store.add_turn(sid, "user", f"about the mice, point {n}: " + "detail " * 40)
+        agent.store.add_turn(sid, "agent", "ok " * 40)
+    assert agent.handle("why do the mice lose weight?") == "ok"
+    size, room = sent_last(wire)
+    assert share_of(window) - 400 <= size <= share_of(window), (size, share_of(window))      # recall filled it
+    assert room >= window // 4, (room, window)
+
+
+def test_the_readmes_quarter_sentence_is_what_the_code_does(wire, tmp_path):
+    readme = " ".join((Path(__file__).parent.parent / "README.md").read_text().split())
+    assert ("The answer keeps a quarter of the context (at least 1,024 tokens), and the prompt may take four fifths "
+            "of the rest") in readme
+    ((window, prompt, answer),) = re.findall(r"In a ([\d,]+)-token window, recall fills the prompt to at most ([\d,]+) "
+                                             r"tokens, leaving the answer at least ([\d,]+)\.", readme)
+    window, prompt, answer = (int(n.replace(",", "")) for n in (window, prompt, answer))
+    assert agent_on(wire, tmp_path, "ollama", window, memory=Full(), recall_budget_tokens=10**6).handle("hi") == "ok"
+    size, room = sent_last(wire)
+    assert prompt - 3 <= size <= prompt and room >= answer, (size, room)
+    assert answer == max(window // 4, 1024) and prompt == share_of(window)
 
 
 # --- Round 7: the round-6 verifier's two surviving mutants, each now with a test ------------------------------

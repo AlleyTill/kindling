@@ -151,7 +151,7 @@ def test_recall_6b_another_retriever_can_be_swapped_in(tmp_path):
             self.asked = (query, budget_tokens)
             return Recalled("=== Session 7 ===\n[turn 70] user: from my own retriever", [(7, 1.0)], "by hand")
     own = OwnRetriever()
-    config = Config(db=str(tmp_path / "agent.db"))
+    config = Config(db=str(tmp_path / "agent.db"), context_tokens=100000)       # the cap binds, not the room
     agent = Agent(Store(config.db, Clock()), FakeModel(fn=lambda messages: "ok"), HashEmbedder(), config, memory=own)
     agent.handle("hello")
     assert own.asked == ("hello", 8000)                         # the agent asked the retriever it was given
@@ -271,11 +271,13 @@ class Asked:
 
 
 @pytest.mark.parametrize("context, prompt, cap, budget", [
-    (8000, 2000, 8000, 4000),          # 8,000 - 2,000 - a quarter of 8,000 for the answer
+    (8000, 2000, 8000, 2800),          # (8,000 - a quarter of 8,000 for the answer) * 4/5 - 2,000 (round 7)
     (100000, 100, 8000, 8000),         # never more than the cap
     (100000, 100, 500, 500),           # the cap is yours to set
-    (3000, 100, 8000, 1876),           # the answer's room is at least 1,024 tokens
-    (8000, 5100, 8000, None),          # under 1,000 tokens of room: recall is skipped, and says so
+    (3000, 100, 8000, 1480),           # the answer's room is at least 1,024 tokens: (3,000 - 1,024) * 4/5 - 100
+    (8000, 3800, 8000, 1000),          # 1,000 tokens of room: recall runs
+    (8000, 3801, 8000, None),          # 999: under 1,000 tokens of room, recall is skipped, and says so
+    (8000, 5100, 8000, None),          # no room at all
 ])
 def test_recall_9_the_budget_is_what_the_context_leaves(tmp_path, context, prompt, cap, budget):
     config = Config(db=str(tmp_path / "agent.db"), context_tokens=context, recall_budget_tokens=cap)
@@ -303,6 +305,6 @@ def test_recall_10b_as_the_session_grows_the_best_session_that_fits_is_kept_not_
     add_session(agent.store, [("user", "the warblers migrate in April " * 107)])        # relevant, ~800 tokens
     for topic in ("sourdough", "bicycles"):
         add_session(agent.store, [("user", f"notes about {topic} " * 145)])            # newer, ~800 tokens each
-    agent.handle("when do the warblers migrate? " + "padding " * 600)                  # room for one session
+    agent.handle("when do the warblers migrate? " + "padding " * 400)                  # room for one session
     recalled = agent.model.calls[-1][-1]["content"].split("YOUR CURRENT BELIEFS")[0]
     assert recalled.count("=== Session ") == 1 and "=== Session 1," in recalled

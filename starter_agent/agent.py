@@ -14,7 +14,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from . import bdi, curiosity
-from .models import check_fits, clean, context_of, estimate_tokens, split_json, take_counts, text_of
+from .models import check_fits, clean, context_of, prompt_size, split_json, take_counts, text_of
 from .recall import Memory, Recalled, render_session
 
 
@@ -51,10 +51,12 @@ class Agent:
 
     def recall(self, query, bare):
         """RECALL in the room the model's context leaves (Nexus): the budget is the smaller of
-        recall_budget_tokens and context - this prompt without recall - room for the answer. With under
-        about 1,000 tokens of room, recall is skipped, and you and the model are told."""
+        recall_budget_tokens and the prompt's room - this prompt without recall. The answer keeps a quarter of
+        the context (at least 1,024 tokens), and the prompt's room is four fifths of the rest: the quarter to
+        spare that check_fits and answer_room keep, so the answer's limit still leaves the answer its quarter.
+        With under about 1,000 tokens of room, recall is skipped, and you and the model are told."""
         context = context_of(self.config, self.model)
-        room = context - estimate_tokens("".join(m["content"] for m in bare)) - max(context // 4, 1024)
+        room = (context - max(context // 4, 1024)) * 4 // 5 - prompt_size(bare)
         if room < 1000:
             self.notes.append(f"recall skipped: this session leaves ~{max(room, 0):,} tokens of the model's "
                               f"{context:,}-token context")

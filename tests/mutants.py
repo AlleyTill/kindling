@@ -305,8 +305,8 @@ MUTANTS = [
         "    if True:")]),
     # --- Round 3: the context (Nexus) ---------------------------------------------------------------------
     ("recall's budget is what the context leaves", "starter_agent/agent.py", [(
-        'room = context - estimate_tokens("".join(m["content"] for m in bare)) - max(context // 4, 1024)',
-        "room = context - max(context // 4, 1024)")]),
+        "room = (context - max(context // 4, 1024)) * 4 // 5 - prompt_size(bare)",
+        "room = (context - max(context // 4, 1024)) * 4 // 5")]),
     ("the answer's room is at least 1,024 tokens", "starter_agent/agent.py", [(
         "max(context // 4, 1024)", "context // 4")]),
     ("the budget never exceeds recall_budget_tokens", "starter_agent/agent.py", [(
@@ -641,6 +641,12 @@ MUTANTS = [
     ("with context_tokens set, curiosity's note says to raise it", "starter_agent/models.py", [(
         "    return not config.context_tokens and bool(reported and reported())",
         "    return bool(reported and reported())")]),
+    # --- Round 7: with recall at its budget, the answer keeps its quarter (r6 verifier's MEDIUM; CC's call) -----
+    ("recall's room goes through check_fits's 5/4, so the answer keeps its quarter", "starter_agent/agent.py", [(
+        "        room = (context - max(context // 4, 1024)) * 4 // 5 - prompt_size(bare)",
+        "        room = context - max(context // 4, 1024) - prompt_size(bare)")]),
+    ("the README's quarter sentence is what the code does", "README.md", [(
+        "recall fills the prompt to at most 2,457 tokens", "recall fills the prompt to at most 3,072 tokens")]),
     # --- Round 7: the round-6 verifier's two surviving mutants, each now with a test --------------------------
     ("R3 curiosity asks no server for a session with no agent turn", "starter_agent/curiosity.py", [(
         "if mine and reported_window(config, model)", "if reported_window(config, model)")]),
