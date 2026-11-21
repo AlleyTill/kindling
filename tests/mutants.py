@@ -445,13 +445,13 @@ MUTANTS = [
     ("vLLM: the entry for this model, not another's", "starter_agent/models.py", [(
         'entry.get("id") == self.model and whole_number_at', "whole_number_at")]),
     ("llama.cpp's n_ctx is the window", "starter_agent/models.py", [(
-        'whole_number_at(props, "n_ctx") or whole_number_at(props, "default_generation_settings", "n_ctx")', "None")]),
+        "        return min([n for n in found if n], default=None)", "        return None")]),
     ("llama.cpp's n_ctx under default_generation_settings counts too", "starter_agent/models.py", [(
-        ' or whole_number_at(props, "default_generation_settings", "n_ctx")', "")]),
+        ', whole_number_at(props, "default_generation_settings", "n_ctx")]', "]")]),
     ("Anthropic's max_input_tokens is the window", "starter_agent/models.py", [(
         'return whole_number_at(said, "max_input_tokens") or assumed("anthropic")', 'return assumed("anthropic")')]),
-    ("Anthropic is asked with the same headers as a message", "starter_agent/models.py", [(
-        "{urllib.parse.quote(self.model, safe='')}\", self.headers)", "{urllib.parse.quote(self.model, safe='')}\")")]),
+    ("Anthropic is asked with a message's key and version", "starter_agent/models.py", [(
+        "{urllib.parse.quote(self.model, safe='')}\", asked)", "{urllib.parse.quote(self.model, safe='')}\")")]),
     ("the server's window is the one the length check and recall use", "starter_agent/models.py", [(
         '    window = getattr(model, "window", None)', "    window = None")]),
     ("context_tokens in agent.json always wins", "starter_agent/models.py", [(
@@ -585,6 +585,14 @@ MUTANTS = [
         '        if value_at(out, "choices", 0, "finish_reason") == "length":', "        if False:")]),
     ("the 'length' note names the room left", "starter_agent/models.py", [(
         'print(f"WARNING: the answer hit the room left for it ({room}) and', 'print(f"WARNING: the answer hit a limit and')]),
+    # --- Round 5: the round-4 verifier's smaller items ---------------------------------------------------
+    ("llama.cpp's top-level n_ctx counts", "starter_agent/models.py", [(
+        '        found = [whole_number_at(props, "n_ctx"), ', "        found = [None, ")]),
+    ("/props reporting both n_ctx values: the smaller", "starter_agent/models.py", [(
+        "        return min([n for n in found if n], default=None)", "        return max([n for n in found if n], default=None)")]),
+    ("the Anthropic models GET sends no beta header", "starter_agent/models.py", [(
+        '        asked = {name: value for name, value in self.headers.items() if name != "anthropic-beta"}',
+        "        asked = self.headers")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

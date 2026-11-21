@@ -359,7 +359,8 @@ class OpenAICompatible:
             if isinstance(entry, dict) and entry.get("id") == self.model and whole_number_at(entry, "max_model_len"):
                 return entry["max_model_len"]                                              # vLLM
         props = ask_once(re.sub(r"/v1$", "", self.base_url) + "/props", self.headers)     # llama.cpp
-        return whole_number_at(props, "n_ctx") or whole_number_at(props, "default_generation_settings", "n_ctx")
+        found = [whole_number_at(props, "n_ctx"), whole_number_at(props, "default_generation_settings", "n_ctx")]
+        return min([n for n in found if n], default=None)        # both said: the smaller, the safe side
 
     def room(self, messages):
         """The most the answer may take, as for Ollama: what the prompt leaves of a known window (context_tokens
@@ -401,8 +402,10 @@ class Anthropic:
 
     def window(self):
         """Anthropic says: GET /v1/models/{model} gives max_input_tokens, the model's context window. Asked
-        once per run, with the same headers as each message; otherwise the usual 1,000,000, said once."""
-        said = ask_once(f"{self.base_url}/v1/models/{urllib.parse.quote(self.model, safe='')}", self.headers)
+        once per run, with a message's key and version but not its beta header, which is for "fallbacks" on
+        a message; otherwise the usual 1,000,000, said once."""
+        asked = {name: value for name, value in self.headers.items() if name != "anthropic-beta"}
+        said = ask_once(f"{self.base_url}/v1/models/{urllib.parse.quote(self.model, safe='')}", asked)
         return whole_number_at(said, "max_input_tokens") or assumed("anthropic")
 
     def complete(self, messages):

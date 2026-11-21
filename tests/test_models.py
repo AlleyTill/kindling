@@ -188,6 +188,13 @@ def test_llama_cpp_says_its_window_on_props(wire, props):
     assert window_of(wire, {f"{VLLM}/models": listed, "http://localhost:8000/props": props}) == 3072
 
 
+@pytest.mark.parametrize("props, window", [({"n_ctx": 32768, "default_generation_settings": {"n_ctx": 8192}}, 8192),
+                                           ({"n_ctx": 4096, "default_generation_settings": {"n_ctx": 8192}}, 4096)])
+def test_props_reporting_both_windows_gives_the_smaller(wire, props, window):
+    """The round-4 verifier's LOW: llama.cpp's per-slot window is the nested one; the smaller is the safe side."""
+    assert window_of(wire, {"http://localhost:8000/props": props}) == window
+
+
 @pytest.mark.parametrize("facts", [{}, {f"{VLLM}/models": {"data": [{"id": "other", "max_model_len": 4096}]}},
                                    {f"{VLLM}/models": {"data": [{"id": "m", "max_model_len": "4096"}]}},
                                    {f"{VLLM}/models": {"data": "m"}, "http://localhost:8000/props": [3072]},
@@ -202,7 +209,8 @@ def test_a_server_that_cant_say_gets_the_usual_window_said_once(wire, capsys, fa
     assert [url for url, _ in wire.asked] == [f"{VLLM}/models", "http://localhost:8000/props"]   # once each
 
 
-def test_anthropic_says_its_window_asked_with_the_same_headers_as_a_message(wire, monkeypatch, capsys):
+def test_anthropic_says_its_window_asked_with_a_messages_key_and_version_but_no_beta_header(wire, monkeypatch,
+                                                                                            capsys):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     wire.facts["https://api.anthropic.com/v1/models/claude-opus-5-5"] = {"id": "claude-opus-5-5",
                                                                          "max_input_tokens": 200000}
@@ -212,7 +220,8 @@ def test_anthropic_says_its_window_asked_with_the_same_headers_as_a_message(wire
     wire.reply = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}
     assert model.complete(MESSAGES) == "ok"
     ((_, asked),), ((_, _, sent),) = wire.asked, wire.sent
-    assert asked == sent and asked.get("x-api-key") == "test-key-not-real" and "anthropic-version" in asked
+    assert "anthropic-beta" in sent and asked == {k: v for k, v in sent.items() if k != "anthropic-beta"}
+    assert asked.get("x-api-key") == "test-key-not-real" and "anthropic-version" in asked
     assert "assuming" not in capsys.readouterr().err
 
 
