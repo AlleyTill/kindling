@@ -184,7 +184,7 @@ def test_a_relative_db_is_taken_as_typed(tmp_path, monkeypatch):
 
 
 def test_settings_out_of_range_or_a_key_in_api_key_env_stop_with_a_message(cli, tmp_path, capsys):
-    pretend_key = "sk-ant-api03-PRETEND-KEY-0000"
+    pretend_key = "test-key-not-real"             # not a variable name, so agent.json refuses it
     for text, message in (('{"question_queue": 0}', '"question_queue" should be from 1'),
                           ('{"idle_minutes": -1}', '"idle_minutes" should be from 0'),
                           ('{"idle_minutes": 9999999999999}', '"idle_minutes" should be from 0'),

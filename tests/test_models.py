@@ -318,20 +318,20 @@ def test_a_missing_key_stops_with_a_message(monkeypatch):
 
 
 def test_the_usual_key_goes_only_to_the_providers_own_address(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key-not-real")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key-not-real")
-    assert OpenAICompatible("m").key == "openai-key-not-real"                         # api.openai.com
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-real-1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real-2")
+    assert OpenAICompatible("m").key == "test-key-not-real-1"                         # api.openai.com
     assert OpenAICompatible("m", "http://localhost:1234/v1").key == ""               # LM Studio: not sent
     assert isinstance(outcome(Anthropic, "", "https://gateway.example.org"), SystemExit)   # name it, or nothing
-    monkeypatch.setenv("CLASS_KEY", "class-key-not-real")
-    assert OpenAICompatible("m", "https://vllm.example.org/v1", "CLASS_KEY").key == "class-key-not-real"
+    monkeypatch.setenv("CLASS_KEY", "test-key-not-real-3")
+    assert OpenAICompatible("m", "https://vllm.example.org/v1", "CLASS_KEY").key == "test-key-not-real-3"
 
 
 def test_a_key_is_never_sent_over_plain_http_to_another_machine(monkeypatch):
-    monkeypatch.setenv("CLASS_KEY", "class-key-not-real")
+    monkeypatch.setenv("CLASS_KEY", "test-key-not-real-3")
     stopped = outcome(OpenAICompatible, "m", "http://203.0.113.9:8000/v1", "CLASS_KEY")
     assert isinstance(stopped, SystemExit) and "plain http" in str(stopped.code)
-    assert OpenAICompatible("m", "http://127.0.0.1:8000/v1", "CLASS_KEY").key == "class-key-not-real"
+    assert OpenAICompatible("m", "http://127.0.0.1:8000/v1", "CLASS_KEY").key == "test-key-not-real-3"
 
 
 def test_openai_with_no_address_and_no_key_sends_nothing(monkeypatch, wire):

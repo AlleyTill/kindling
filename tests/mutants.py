@@ -414,6 +414,8 @@ MUTANTS = [
     ("a db under ~ is expanded", "starter_agent/config.py", [(
         'db = os.path.expanduser(values.get("db", Config.db))', 'db = values.get("db", Config.db)')]),
     ("an empty db is refused", "starter_agent/config.py", [("    if not db.strip():", "    if False:")]),
+    ("a key in api_key_env is never printed back", "starter_agent/config.py", [(
+        "\"What's there isn't one (if it's a key,", "f\"What's there, {values['api_key_env']}, isn't one (if it's a key,")]),
     # --- Round 4: Nexus's measurements (20 Nov) -----------------------------------------------------------
     ("the estimate counts a digit or a non-ASCII character as a whole token", "starter_agent/models.py", [(
         "    return (len(text) - digits - wide - punct + 3) // 4 + digits + wide + (punct + 1) // 2",
