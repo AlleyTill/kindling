@@ -17,7 +17,7 @@ import re
 
 from . import bdi
 from .embed import cosine
-from .models import check_fits, context_of, one_line, parse_json, split_json, text_of
+from .models import check_fits, context_of, one_line, parse_json, split_json, take_counts, text_of
 from .recall import turn_line
 
 SYSTEM = """You are reading your own turns from one finished session. List the questions you raised \
@@ -75,10 +75,13 @@ def run(store, model, embedder, config, session_id):
                     {"role": "user", "content": "\n".join(turn_line(t) for t in mine)}]
         check_fits(messages, context_of(config, model))
         raw = text_of(model.complete(messages))
+    counts = take_counts()                 # the server's counts far under the estimate: for the log only
     with store.transaction():
         if store.session(session_id) is None:
             return []
         store.mark_read(session_id)
+        for count in counts:
+            store.log(session_id, "count", count)
         return queue(store, embedder, config, session_id, mine, raw) if raw is not None else []
 
 

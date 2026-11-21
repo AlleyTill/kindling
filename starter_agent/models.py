@@ -83,9 +83,12 @@ def context_of(config, model=None):
 
 
 def assumed(backend):
-    """The backend's usual window, for a server that didn't say what its window is. Said once per run."""
+    """The backend's usual window, for a server that didn't say what its window is. Said once per run, and
+    kept as a risk of a cut: the server's real window may be smaller."""
     note_once(f"Note: the server didn't say how long its context window is, so Kindling is assuming a "
-              f"{CONTEXT[backend]:,}-token window; set context_tokens in agent.json")
+              f"{CONTEXT[backend]:,}-token window. A server with a smaller one may cut a longer prompt without "
+              "saying so: set context_tokens in agent.json to its real window.")
+    at_risk("Kindling had to assume this server's window: set context_tokens in agent.json to its real one")
     return CONTEXT[backend]
 
 
@@ -116,14 +119,25 @@ def prompt_size(messages):
 
 
 def compare_count(server, messages, counted):
-    """After a call: the server's own count of the prompt (None if it gave none) against the estimate. A miss
-    over a quarter is logged on stderr, so you can see how far off the estimate is for your text. It is never
-    read as a sign the prompt was cut: a prompt Ollama cut counted LESS (Nexus, 20 Nov)."""
+    """After a call: the server's own count of the prompt (None if it gave none) against the estimate.
+    - Over it by more than a quarter, the estimate undercounted: the side that can let a prompt too long for
+      the window through. That is printed, each time.
+    - Under it by more than a quarter is usual with Ollama's prompt cache (it counts only what it didn't
+      reuse), but it is also what a cut looks like: a prompt Ollama cut counted about half its window (Nexus,
+      20 Nov). So it goes in the log only (take_counts), unless this run has a known risk of a cut (an
+      assumed window, an Ollama older than 0.32.1): then it is also printed, once, as a possible cut."""
     guessed = prompt_size(messages)
-    if counted is not None and abs(counted - guessed) * 4 > guessed:
-        side = "low: the length check may let through a prompt that doesn't fit" if counted > guessed else "high"
-        print(f"Note: {server} counted {counted:,} prompt tokens; Kindling estimated {guessed:,}, over a quarter "
-              f"{side}. This checks the estimate; it doesn't mean the prompt was cut.", file=sys.stderr)
+    if counted is None or abs(counted - guessed) * 4 <= guessed:
+        return
+    said = f"{server} counted {counted:,} prompt tokens; Kindling estimated {guessed:,}"
+    if counted > guessed:
+        print(f"Note: {said}, over a quarter more. The estimate undercounts your text, so the length check may "
+              "let through a prompt too long for the window.", file=sys.stderr)
+        return
+    COUNTS.append(f"{said}, over a quarter fewer")
+    if RISKS:
+        note_once(f"Note: {said}, over a quarter fewer, which can mean it cut the prompt without saying so. "
+                  + ". ".join(RISKS) + ".", key="possible cut")
 
 
 # --- Talking to a server -----------------------------------------------------------------------------
@@ -162,6 +176,8 @@ def fetch_json(url, body=None, headers=None, timeout=600):
 
 ASKED = {}       # what each server said about itself, asked once per process: {address: its JSON, or None}
 TOLD = set()     # the notes already printed in this process
+RISKS = []       # why the server may cut a prompt without saying so, in this process (what to do about it)
+COUNTS = []      # the server's counts far under the estimate, for the agent's log (take_counts)
 
 
 def ask_once(url, headers=None):
@@ -175,11 +191,25 @@ def ask_once(url, headers=None):
     return ASKED[url]
 
 
-def note_once(text):
-    """A note for you on stderr, printed once per process."""
-    if text not in TOLD:
-        TOLD.add(text)
+def note_once(text, key=None):
+    """A note for you on stderr, printed once per process (once per `key`, for a note whose numbers vary)."""
+    key = key or text
+    if key not in TOLD:
+        TOLD.add(key)
         print(text, file=sys.stderr)
+
+
+def at_risk(reason):
+    """Remember, for this process, a reason the server may cut a prompt without saying so."""
+    if reason not in RISKS:
+        RISKS.append(reason)
+
+
+def take_counts():
+    """The counts compare_count kept for the log since the last call, which it then forgets."""
+    taken = COUNTS[:]
+    COUNTS.clear()
+    return taken
 
 
 def text_of(reply):
@@ -276,6 +306,7 @@ class Ollama:
         elif parts < OLLAMA_TESTED:
             note_once(f"WARNING: this Ollama is {version}, older than 0.32.1, the version Kindling was tested "
                       f"with. It {risk}")
+            at_risk(f'This Ollama ({version}) is older than 0.32.1 and may ignore "truncate": false: update it')
 
 
 class OpenAICompatible:

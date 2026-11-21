@@ -128,7 +128,7 @@ Run every command from inside this folder.
 | `curious list` | open questions, each with the agent's own words it came from |
 | `curious drop ID` / `curious adopt ID [--rank N]` | turn a question down; make it a desire |
 | `recall WORDS` | exactly what recall would hand the model for these words, with each session's score |
-| `log` | what was dropped, and why |
+| `log` | what was dropped, and why; and each prompt count the server gave far under the estimate |
 
 After each `chat` turn, lines starting `--` show everything the reply wrote: each belief recorded, an
 intention marked done, how many proposed changes were rejected, and any session recall skipped.
@@ -159,8 +159,8 @@ it again. With bge-small the match is by meaning, but how well it works hasn't b
 ## What it remembers, and how to delete it
 
 Everything is in one file, `memory/agent.db`: sessions, every turn, an embedding of each of your messages,
-beliefs, desires, intentions, curiosity's questions, and a log of what was rejected. Look inside with the
-`sqlite3` tool if you have it, or with Python:
+beliefs, desires, intentions, curiosity's questions, and a log of what was rejected (and of the server's
+prompt counts far under the estimate). Look inside with the `sqlite3` tool if you have it, or with Python:
 ```
 sqlite3 memory/agent.db .tables
 python -c "import sqlite3; print(sqlite3.connect('memory/agent.db').execute('SELECT name FROM sqlite_master').fetchall())"
@@ -244,15 +244,21 @@ punctuation mark, and a whole token for each digit or non-ASCII character. Nexus
 2026: on prose, code, Spanish, mixed languages, JSON, numbers and Japanese it erred high, but it is no bound
 on text built to defeat it.
 
-Before anything is sent, the whole prompt is checked against the context with a quarter to spare; one too
-long is refused with a message, never cut in silence. Ollama is also asked to refuse one itself
-(`"truncate": false`), and its refusal comes back as the same message, with Ollama's own count. That was
-tested on Ollama 0.32.1: an older Ollama may ignore it and cut a long prompt without saying so, and Kindling
-tells you when the Ollama it talks to is older. After a reply, Ollama's count warns you only that the prompt
-left almost no room for the reply. It can't show a cut: Nexus found that a prompt Ollama cut counts *less*
-(about half the window), not more. And after each reply, the server's own count of the prompt (Ollama,
-OpenAI-compatible and Anthropic replies carry one) is compared with the estimate: a miss of over a quarter is
-printed, so you can see how the estimate does on your text, and it is never taken as a sign of a cut.
+Before anything is sent, the whole prompt is checked against the context with a quarter to spare, and one
+too long is refused with a message. Ollama is also asked to refuse one itself (`"truncate": false`), and its
+refusal comes back as the same message, with Ollama's own count. **So a prompt is never cut in silence on
+Ollama 0.32.1 or later, or on a server that reports its window** (unless you set `context_tokens` above it).
+Elsewhere it can be: an older Ollama may ignore `"truncate": false`, and a server that doesn't report its
+window may have a smaller one than Kindling assumes; either may cut a long prompt without saying so.
+Kindling tells you when the Ollama is older, and when it is assuming a window.
+
+After each reply, the server's own count of the prompt (Ollama, OpenAI-compatible and Anthropic replies carry
+one) is compared with the estimate. A count over a quarter *above* it is printed: the estimate undercounted
+your text, so the length check may let through a prompt that doesn't fit. A count over a quarter *below* it
+goes in the log (`log`) only. Ollama's prompt cache makes that usual, since it counts only what it didn't
+reuse, but a cut looks the same: Nexus found that a prompt Ollama cut counts about half the window. So where
+a cut is possible (an assumed window, or an Ollama older than 0.32.1), it is also printed, once, as a
+possible cut. And a count near Ollama's window warns you that the prompt left almost no room for the reply.
 
 A session is never cut in half, so a session bigger than the budget is never recalled, and a 30-turn day
 with real replies can be that big. **`chat` and `recall` name a session when its size, not its rank, kept it

@@ -14,7 +14,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from . import bdi, curiosity
-from .models import PromptTooLong, check_fits, clean, context_of, estimate_tokens, split_json, text_of
+from .models import PromptTooLong, check_fits, clean, context_of, estimate_tokens, split_json, take_counts, text_of
 from .recall import Memory, Recalled, render_session
 
 
@@ -85,6 +85,7 @@ class Agent:
             messages = bdi.act_messages(pack.text, beliefs, intention, this)
             check_fits(messages, context_of(self.config, self.model))
             reply, changes = split_json(clean(text_of(self.model.complete(messages))))
+            counts = take_counts()      # the server's counts far under the estimate: for the log only
 
             # RECORD: the reply and its changes together, only while the session exists (you may have
             # deleted it from another terminal while the model answered). Evidence: turns the model saw.
@@ -92,6 +93,8 @@ class Agent:
                 if self.store.session(sid) is None:
                     return "(This session was deleted while the model was answering, so nothing was kept.)"
                 self.store.add_turn(sid, "agent", reply)
+                for count in counts:
+                    self.store.log(sid, "count", count)
                 self.notes += bdi.record_changes(self.store, changes, self.store.turn_ids(recalled + [sid]),
                                                  sid, intention)
         except BaseException:              # no usable reply (unreachable, unreadable, or you pressed Ctrl-C):

@@ -245,7 +245,7 @@ def main(argv=None, model=None, clock=utc_now):
     s.add_argument("--rank", type=number)
     s = sub.add_parser("recall", help="what recall would hand the model for this query")
     s.add_argument("query", nargs="+")
-    sub.add_parser("log", help="what was dropped, and why")
+    sub.add_parser("log", help="what was dropped, and why; the server's counts far under the estimate")
     a = p.parse_args(argv)
     if a.config and not os.path.exists(a.config):
         raise SystemExit(f"{a.config} doesn't exist. Leave out --config to use agent.json (or the defaults).")

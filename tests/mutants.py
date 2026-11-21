@@ -434,7 +434,7 @@ MUTANTS = [
         'not (counted or "exceed_context_size_error" in error.said)', "not counted")]),
     ("a server is asked about itself once per run", "starter_agent/models.py", [(
         "    if url not in ASKED:", "    if True:")]),
-    ("a note is printed once per run", "starter_agent/models.py", [("    if text not in TOLD:", "    if True:")]),
+    ("a note is printed once per run", "starter_agent/models.py", [("    if key not in TOLD:", "    if True:")]),
     ("an Ollama older than 0.32.1 is named", "starter_agent/models.py", [(
         "        elif parts < OLLAMA_TESTED:", "        elif False:")]),
     ("an Ollama whose version can't be read is named", "starter_agent/models.py", [(
@@ -463,9 +463,9 @@ MUTANTS = [
     ("the after-call compare never raises, whatever the reply's shape", "starter_agent/models.py", [(
         "    except (LookupError, TypeError):\n        return None", "    except LookupError:\n        return None")]),
     ("an estimate missed by over a quarter is logged", "starter_agent/models.py", [(
-        "abs(counted - guessed) * 4 > guessed", "abs(counted - guessed) > guessed * 4")]),
+        "abs(counted - guessed) * 4 <= guessed", "abs(counted - guessed) <= guessed * 4")]),
     ("an estimate within a quarter isn't logged", "starter_agent/models.py", [(
-        "abs(counted - guessed) * 4 > guessed", "abs(counted - guessed) * 40 > guessed")]),
+        "abs(counted - guessed) * 4 <= guessed", "abs(counted - guessed) * 40 <= guessed")]),
     ("Ollama's count is compared after each call", "starter_agent/models.py", [(
         '        compare_count("Ollama", messages, used)\n', "")]),
     ("an OpenAI-compatible server's count is compared after each call", "starter_agent/models.py", [(
@@ -499,6 +499,32 @@ MUTANTS = [
         'method="GET" if body is None else "POST",', 'method="POST",')]),
     ("V12 the length check counts the whole prompt, the system message too", "starter_agent/models.py", [(
         "    size = prompt_size(messages)\n", "    size = prompt_size(messages[1:])\n")]),
+    # --- Round 5: honest notes after each call (r4 verifier's MEDIUM 1, CC's rule) ---------------------
+    ("V4 the compare's two sides are the right way round", "starter_agent/models.py", [(
+        "    if counted > guessed:\n", "    if counted < guessed:\n")]),
+    ("a count far over the estimate is printed", "starter_agent/models.py", [(
+        '"let through a prompt too long for the window.", file=sys.stderr)',
+        '"let through a prompt too long for the window.", file=open(os.devnull, "w"))')]),
+    ("a count far under the estimate is kept for the log", "starter_agent/models.py", [(
+        '    COUNTS.append(f"{said}, over a quarter fewer")\n', "")]),
+    ("a count far under is printed only with a known risk of a cut", "starter_agent/models.py", [(
+        "    if RISKS:\n", "    if True:\n")]),
+    ("with a known risk, a count far under is printed as a possible cut", "starter_agent/models.py", [(
+        "    if RISKS:\n", "    if False:\n")]),
+    ("the possible cut is said once per run", "starter_agent/models.py", [(', key="possible cut")', ")")]),
+    ("an assumed window is a known risk of a cut", "starter_agent/models.py", [(
+        '    at_risk("Kindling had to assume', '    str("Kindling had to assume')]),
+    ("an Ollama older than 0.32.1 is a known risk of a cut", "starter_agent/models.py", [(
+        "            at_risk(f'This Ollama", "            str(f'This Ollama")]),
+    ("the assumed-window note says a smaller server may cut without saying so", "starter_agent/models.py", [(
+        '"saying so: set context_tokens in agent.json to its real window.")',
+        '"set context_tokens in agent.json to its real window.")')]),
+    ("the agent writes the counts far under the estimate to the log", "starter_agent/agent.py", [(
+        '                    self.store.log(sid, "count", count)\n', "                    pass\n")]),
+    ("curiosity writes them to the log too", "starter_agent/curiosity.py", [(
+        '            store.log(session_id, "count", count)\n', "            pass\n")]),
+    ("a count is logged once, not again with the next call's", "starter_agent/models.py", [(
+        "    COUNTS.clear()\n", "")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

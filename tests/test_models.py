@@ -192,7 +192,11 @@ def test_llama_cpp_says_its_window_on_props(wire, props):
                                    {"http://localhost:8000/props": {"n_ctx": 0}}])
 def test_a_server_that_cant_say_gets_the_usual_window_said_once(wire, capsys, facts):
     assert window_of(wire, facts) == window_of(wire, {}) == 16384
-    assert capsys.readouterr().err.count("assuming a 16,384-token window; set context_tokens in agent.json") == 1
+    err = capsys.readouterr().err
+    assert err.count("assuming a 16,384-token window. A server with a smaller one may cut a longer prompt without "
+                     "saying so: set context_tokens in agent.json to its real window.") == 1
+    assert models.RISKS == ["Kindling had to assume this server's window: set context_tokens in agent.json to its "
+                            "real one"]                                 # kept once, as a risk of a cut
     assert [url for url, _ in wire.asked] == [f"{VLLM}/models", "http://localhost:8000/props"]   # once each
 
 
@@ -214,7 +218,7 @@ def test_anthropic_that_cant_say_gets_the_usual_window_said_once(wire, monkeypat
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     assert window_of(wire, {}, backend="anthropic", model="", base_url="") == 1_000_000
     assert window_of(wire, {}, backend="anthropic", model="", base_url="") == 1_000_000
-    assert capsys.readouterr().err.count("assuming a 1,000,000-token window; set context_tokens") == 1
+    assert capsys.readouterr().err.count("assuming a 1,000,000-token window. A server with a smaller one may cut") == 1
 
 
 def test_ollamas_window_is_the_num_ctx_kindling_sends_and_needs_no_question(wire):
@@ -302,7 +306,10 @@ def test_the_length_check_counts_the_system_prompt_too():
     assert isinstance(outcome(check_fits, long_system, 1000), PromptTooLong)
 
 
-# --- After each call, the server's own count checks the estimate: a miss is logged, never read as a cut -------
+# --- After each call, the server's own count checks the estimate (r4 verifier's MEDIUM 1, CC's rule, 20 Nov) -----
+# Over the estimate by more than a quarter (it undercounted: the dangerous side) is printed. Under it by more than
+# a quarter is logged only: usual with Ollama's prompt cache, but also what a cut looks like (Nexus), so where a cut
+# is possible (an assumed window, an Ollama older than 0.32.1) it is printed once, as a possible cut.
 
 PROSE = [{"role": "user", "content": "x" * 4000}]                       # estimated 1,000 tokens
 COUNTED = {"ollama": lambda n: {"message": {"content": "ok"}, "prompt_eval_count": n},
@@ -317,16 +324,72 @@ def backend(wire, monkeypatch, name):
 
 
 @pytest.mark.parametrize("name", COUNTED)
-def test_a_miss_over_a_quarter_is_logged_and_never_called_a_cut(wire, capsys, monkeypatch, name):
+def test_a_count_far_over_the_estimate_is_printed_and_one_far_under_only_logged(wire, capsys, monkeypatch, name):
+    """The two sides are the right way round (the round-4 verifier's V4), and neither says "not a cut"."""
     model = backend(wire, monkeypatch, name)
-    for counted, logged in ((1200, False), (800, False), (1300, True), (700, True)):
+    for counted, printed, kept in ((1200, False, False), (800, False, False), (1300, True, False), (700, False, True)):
         wire.reply = COUNTED[name](counted)
         assert model.complete(PROSE) == "ok"
         err = capsys.readouterr().err
-        assert ("over a quarter" in err) is logged, (counted, err)
-        if logged:
-            assert f"counted {counted:,} prompt tokens; Kindling estimated 1,000" in err
-            assert "it doesn't mean the prompt was cut" in err
+        assert ("counted" in err) is printed, (counted, err)
+        assert models.take_counts() == ([f"{err_name(name)} counted 700 prompt tokens; Kindling estimated 1,000, over a "
+                                         "quarter fewer"] if kept else []), counted
+        if printed:
+            assert f"counted {counted:,} prompt tokens; Kindling estimated 1,000, over a quarter more" in err
+            assert "the length check may let through a prompt too long for the window" in err
+        assert "mean the prompt was cut" not in err and "not a cut" not in err
+
+
+def err_name(name):
+    return {"ollama": "Ollama", "openai": "The server", "anthropic": "Anthropic"}[name]
+
+
+@pytest.mark.parametrize("risk", ["an assumed window", "an Ollama older than 0.32.1"])
+def test_a_count_far_under_the_estimate_is_printed_once_as_a_possible_cut_where_a_cut_is_possible(wire, capsys,
+                                                                                                risk):
+    """The round-4 verifier's path: Ollama's own /v1 says no window, Kindling assumes 16,384, and the server
+    counts far fewer tokens than the estimate. That can be a cut, so it's said, once per run, and logged each time."""
+    if risk == "an assumed window":
+        config = Config(backend="openai", model="m", base_url=VLLM)
+        model, reply = models.make_model(config), COUNTED["openai"]
+        assert models.context_of(config, model) == 16384               # nothing says: assumed
+    else:
+        wire.facts[OLLAMA_VERSION] = {"version": "0.31.9"}
+        model, reply = Ollama(), COUNTED["ollama"]
+    for counted in (700, 600, 500):
+        wire.reply = reply(counted)
+        assert model.complete(PROSE) == "ok"
+    err = capsys.readouterr().err
+    assert err.count("which can mean it cut the prompt without saying so") == 1, err   # once per run
+    assert "counted 700 prompt tokens; Kindling estimated 1,000, over a quarter fewer" in err
+    assert ("set context_tokens in agent.json to its real one" in err) is (risk == "an assumed window")
+    assert ("This Ollama (0.31.9) is older than 0.32.1" in err) is (risk != "an assumed window")
+    assert len(models.take_counts()) == 3                              # and every one is in the log
+
+
+def test_without_a_known_risk_a_count_far_under_is_never_printed(wire, capsys):
+    """An Ollama whose version can't be read is not a known risk (CC's rule names two): logged, not printed."""
+    model = Ollama()                                                    # no /api/version: HTTP 404
+    wire.reply = COUNTED["ollama"](500)
+    assert model.complete(PROSE) == "ok"
+    assert "counted" not in capsys.readouterr().err and len(models.take_counts()) == 1
+
+
+def test_the_agent_and_curiosity_write_a_count_far_under_the_estimate_to_the_log(wire, tmp_path, capsys):
+    wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+    config = Config(db=str(tmp_path / "agent.db"), backend="ollama")
+    agent = Agent(Store(config.db, Clock()), models.make_model(config), HashEmbedder(), config)
+    wire.reply = {"message": {"content": "ok"}, "prompt_eval_count": 5}     # far under: a prompt cache, say
+    assert agent.handle("hello") == "ok"
+    wire.reply = {"message": {"content": '{"questions": []}'}, "prompt_eval_count": 6}
+    agent.end_session()
+    rows = agent.store.db.execute("SELECT session_id, reason FROM log WHERE kind='count' ORDER BY id").fetchall()
+    assert [tuple(row) for row in rows] == [
+        (1, f"Ollama counted 5 prompt tokens; Kindling estimated {models.prompt_size(wire.sent[0][1]['messages']):,}, "
+            "over a quarter fewer"),
+        (1, f"Ollama counted 6 prompt tokens; Kindling estimated {models.prompt_size(wire.sent[1][1]['messages']):,}, "
+            "over a quarter fewer")]
+    assert "counted" not in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("name", COUNTED)
