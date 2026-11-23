@@ -51,9 +51,13 @@ def ranks(scores, positive_only=False):
 
 def render_session(store, session_id):
     session = store.session(session_id)
-    ended = local(session["ended_at"]) if session["ended_at"] else "now"
-    lines = [f"=== Session {session_id}, {local(session['started_at'])} to {ended} ==="]
+    lines = [heading(session_id, session["started_at"], session["ended_at"])]
     return "\n".join(lines + [turn_line(t) for t in store.turns(session_id)])
+
+
+def heading(session_id, started_at, ended_at=None):
+    """A session's first line: '=== Session 3, 2026-11-19 01:00 to now ===' (still open: 'now')."""
+    return f"=== Session {session_id}, {local(started_at)} to {local(ended_at) if ended_at else 'now'} ==="
 
 
 def turn_line(t):

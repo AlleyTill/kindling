@@ -156,6 +156,13 @@ class Store:
     def session(self, session_id):
         return self.db.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
 
+    def next_id(self, table):
+        """The id SQLite will give the next row of `table`, read without writing: one past the largest ever
+        handed out (sessions and turns never reuse an id) or, in the other tables, the largest in use."""
+        given = self.db.execute("SELECT seq FROM sqlite_sequence WHERE name=?", (table,)).fetchone()
+        used = self.db.execute(f"SELECT MAX(id) FROM {table}").fetchone()[0]
+        return max(given[0] if given else 0, used or 0) + 1
+
     def add_turn(self, session_id, role, text):
         with self.transaction():
             n = self.db.execute("SELECT COUNT(*) FROM turns WHERE session_id=?", (session_id,)).fetchone()[0]

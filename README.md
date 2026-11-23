@@ -127,7 +127,7 @@ Run every command from inside this folder.
 | `beliefs ok ID` / `beliefs drop ID` | a flagged belief stands; or stop using a belief (its history stays) |
 | `curious list` | open questions, each with the agent's own words it came from |
 | `curious drop ID` / `curious adopt ID [--rank N]` | turn a question down; make it a desire |
-| `recall WORDS` | exactly what recall would hand the model for these words, with each session's score |
+| `recall WORDS` | what recall would hand the model for these words now, with each session's score (below) |
 | `log` | what was dropped, and why; and each prompt count the server gave far under the estimate |
 
 After each `chat` turn, lines starting `--` show everything the reply wrote: each belief recorded, an
@@ -137,6 +137,12 @@ The commands that list things only read: they never call the model and never wri
 no key (nor does `session delete`). One exception: `recall` embeds any of your messages not yet embedded.
 A session that sat idle ends at your next `chat` or `session end`; `curious list` and `recall` tell you
 when one is waiting.
+
+`recall` packs to the budget a chat turn with those words would have now (what this session, the beliefs
+and the intention leave of the window, at most `recall_budget_tokens`; see Settings), wherever the window is
+known without asking the server: the fake model, Ollama, or `context_tokens` set. For an OpenAI-compatible
+server or Anthropic with no `context_tokens`, it packs to `recall_budget_tokens` and says so: it never asks a
+server, and a chat turn there may pack less.
 
 **Who decides what.** You write and rank the desires. Each turn, plain code (not the model) picks the
 intention that serves your highest-ranked live desire whose intention isn't done. The model can suggest a
@@ -298,7 +304,7 @@ End long days with `/end`, or raise both settings if your model has room.
 
 ## Reading the code
 
-In this order: `agent.py` (the loop, about 140 lines), `recall.py`, `bdi.py`, `curiosity.py`, `models.py`,
+In this order: `agent.py` (the loop, about 170 lines), `recall.py`, `bdi.py`, `curiosity.py`, `models.py`,
 `store.py`, `embed.py`, `config.py`, `cli.py`, `fixtures.py`. Each file starts with a note on what it does.
 
 - **Recall** scores each of your past messages two ways, BM25 (shared words) and the embedder (similar

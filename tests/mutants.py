@@ -310,7 +310,7 @@ MUTANTS = [
     ("the answer's room is at least 1,024 tokens", "starter_agent/agent.py", [(
         "max(context // 4, 1024)", "context // 4")]),
     ("the budget never exceeds recall_budget_tokens", "starter_agent/agent.py", [(
-        "budget = min(self.config.recall_budget_tokens, room)", "budget = room")]),
+        "return min(self.config.recall_budget_tokens, room), room", "return room, room")]),
     ("under 1,000 tokens of room, recall is skipped", "starter_agent/agent.py", [(
         "        if room < 1000:", "        if room < 0:")]),
     ("a prompt too long for the context is refused, not sent", "starter_agent/agent.py", [(
@@ -679,6 +679,24 @@ MUTANTS = [
         'bdi.act_messages("", beliefs, intention, this)', 'bdi.act_messages("", [], intention, this)')]),
     ("recall's room is taken from a prompt that holds the intention", "starter_agent/agent.py", [(
         'bdi.act_messages("", beliefs, intention, this)', 'bdi.act_messages("", beliefs, None, this)')]),
+    # --- Round 8: `recall WORDS` packs to a chat turn's budget where that needs no request (CC's call) ---------
+    ("`recall` packs to the budget a chat turn would have, and skips where it would", "starter_agent/cli.py", [(
+        "        budget, room = agent.budget(agent.preview(query), context)",
+        "        room = agent.budget(agent.preview(query), context)[1]")]),
+    ("where only the server knows its window, `recall` packs to the cap and says so", "starter_agent/models.py", [(
+        '    return context_of(config) if config.context_tokens or config.backend in ("fake", "ollama") else None',
+        "    return context_of(config)")]),
+    ("with context_tokens set, `recall` packs to a chat turn's budget on any backend", "starter_agent/models.py", [(
+        'if config.context_tokens or config.backend in ("fake", "ollama")', 'if config.backend in ("fake", "ollama")')]),
+    ("the preview holds the open session", "starter_agent/agent.py", [(
+        'render_session(store, session["id"]) if session else heading(', 'render_session(store, session["id"]) if '
+        'False else heading(')]),
+    ("the preview holds the intention the turn would write down first", "starter_agent/agent.py", [(
+        "        if desire is not None and intention is None:", "        if False and intention is None:")]),
+    ("the preview holds the message's own turn", "starter_agent/agent.py", [(
+        'intention, this + "\\n" + turn_line(turn))', "intention, this)")]),
+    ("next_id never hands out an id SQLite has already given (sessions, turns)", "starter_agent/store.py", [(
+        "        return max(given[0] if given else 0, used or 0) + 1", "        return (used or 0) + 1")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

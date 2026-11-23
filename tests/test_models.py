@@ -1148,3 +1148,79 @@ def test_with_many_beliefs_and_an_intention_the_answer_keeps_its_quarter(wire, t
     size, room = sent_last(wire)
     assert full.budget > 1000 and share_of(window) - 3 <= size <= share_of(window), (full.budget, size)  # it's full
     assert room >= window // 4 and room >= 1024, (room, window)
+
+
+# --- Round 8: `recall WORDS` packs to a chat turn's budget where that needs no request (r7 verifier's LOW; CC's call) -
+
+BIG = "the mice lose weight " + "z" * 30000        # one past session of ~7,530 tokens: under 8,000, over a turn's room
+
+
+@pytest.mark.parametrize("settings", [{}, {"backend": "ollama"},
+                                      {"backend": "openai", "model": "m", "base_url": VLLM, "context_tokens": 12288}],
+                         ids=["fake", "ollama", "openai, context_tokens set"])
+def test_recall_packs_to_the_budget_a_chat_turn_would_have(wire, cli, tmp_path, capsys, settings):
+    """At the default 12,288 window a chat turn's room (about 7,000) is under the 8,000 cap, so `recall` listed a
+    session that chat left out. Now it packs to the budget the next chat turn has, asking no server: here with an
+    open session, and a desire whose intention that turn writes down first."""
+    (tmp_path / "agent.json").write_text(json.dumps(settings))
+    wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+    wire.reply = ({"choices": [{"message": {"content": "ok"}}]} if settings.get("backend") == "openai"
+                  else {"message": {"content": "ok"}})
+    big, _ = add_session(Store(str(tmp_path / "agent.db"), Clock()), [("user", BIG)])
+    assert cli("chat", "hello") == 0                                                   # an open session
+    assert cli("desire", "add", "Find out why the mice lose weight", "--rank", "1") == 0  # its intention: not yet
+    capsys.readouterr()
+    wire.methods.clear()
+    assert cli("recall", "mice", "weight") == 0
+    out = capsys.readouterr().out
+    assert wire.methods == [] and "Nothing recalled." in out and "may pack less" not in out, (wire.methods, out)
+    tokens, budget = only(re.findall(rf"session {big}  score [\d.]+  skipped: ~([\d,]+) tokens, more than was left of "
+                                     r"the ([\d,]+)-token budget", out))
+    assert cli("chat", "mice", "weight") == 0
+    turn = only(re.findall(rf"recall skipped session {big} \(score [\d.]+\): ~[\d,]+ tokens, more than was left of "
+                           r"this turn's ([\d,]+)-token budget", capsys.readouterr().out))
+    tokens, budget, turn = (int(n.replace(",", "")) for n in (tokens, budget, turn))
+    assert budget == turn < tokens < 8000, (budget, turn, tokens)
+
+
+@pytest.mark.parametrize("settings", [{"backend": "openai", "model": "m", "base_url": VLLM}, {"backend": "anthropic"}],
+                         ids=["openai", "anthropic"])
+def test_where_only_the_server_knows_its_window_recall_packs_to_the_cap_says_so_and_asks_nothing(wire, cli, tmp_path,
+                                                                                                capsys, settings):
+    (tmp_path / "agent.json").write_text(json.dumps({**settings, "recall_budget_tokens": 10**6}))
+    small, _ = add_session(Store(str(tmp_path / "agent.db"), Clock()), [("user", "the mice lose weight")])
+    assert cli("recall", "mice", "weight") == 0
+    out = capsys.readouterr().out
+    assert wire.methods == [] and f"session {small}  score" in out, (wire.methods, out)
+    assert ('(Packed to "recall_budget_tokens", 1,000,000: this model\'s window isn\'t known without asking its '
+            "server, which `recall` never does, so a chat turn may pack less.") in " ".join(out.split())
+
+
+def test_where_a_chat_turn_would_skip_recall_the_recall_command_says_so(cli, tmp_path, capsys):
+    (tmp_path / "agent.json").write_text('{"context_tokens": 3000}')
+    add_session(Store(str(tmp_path / "agent.db"), Clock()), [("user", "my cat is called Biscuit")])
+    assert cli("chat", "x" * 2400) == 0                         # with the demo's echo, ~1,200 tokens of this session
+    capsys.readouterr()
+    assert cli("recall", "cat") == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Nothing recalled: a chat turn now would skip recall") and "session 1" not in out, out
+    assert cli("chat", "cat") == 0 and "recall skipped: this session leaves ~" in capsys.readouterr().out
+
+
+def test_next_id_is_the_id_sqlite_gives_the_next_row(tmp_path):
+    """`recall` predicts the rows a chat turn would write without writing them: their ids must be SQLite's own."""
+    store = Store(str(tmp_path / "ids.db"), Clock())
+    assert [store.next_id(table) for table in ("sessions", "turns", "intentions")] == [1, 1, 1]
+    sid = store.start_session()
+    store.add_turn(sid, "user", "a")
+    store.add_turn(sid, "user", "b")
+    store.forget_session(sid)                     # the largest ids are gone, but sessions and turns never reuse one
+    predicted = store.next_id("sessions"), store.next_id("turns")
+    sid = store.start_session()
+    assert predicted == (sid, store.add_turn(sid, "user", "c")) == (2, 3)
+    for text in ("x", "y"):
+        store.append("intentions", {"text": text, "serves": 1, "status": "active", "evidence": "[]", "flag": None})
+    store.db.execute("DELETE FROM intentions WHERE id=2")       # in the other tables, SQLite reuses the largest
+    predicted = store.next_id("intentions")
+    assert predicted == store.append("intentions", {"text": "z", "serves": 1, "status": "active", "evidence": "[]",
+                                                    "flag": None}) == 2

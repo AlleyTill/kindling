@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from . import bdi, curiosity
 from .models import (check_fits, clean, context_of, prompt_size, reported_window, split_json, take_counts,
                      text_of)
-from .recall import Memory, Recalled, render_session
+from .recall import Memory, Recalled, heading, render_session, turn_line
 
 
 def utc_now():
@@ -50,24 +50,45 @@ class Agent:
         session = self.store.open_session()
         return session["id"] if session else self.store.start_session()
 
-    def recall(self, query, bare):
-        """RECALL in the room the model's context leaves (Nexus): the budget is the smaller of
-        recall_budget_tokens and the prompt's room - this prompt without recall. The answer keeps a quarter of
-        the context (at least 1,024 tokens), and the prompt's room is four fifths of the rest: the quarter to
-        spare that check_fits and answer_room keep, so the answer's limit still leaves the answer its quarter.
-        With under about 1,000 tokens of room, recall is skipped, and you and the model are told."""
-        context = context_of(self.config, self.model)
+    def budget(self, bare, context):
+        """(recall's budget in a prompt that is `bare` without recall, the room it has) (Nexus): the budget is the
+        smaller of recall_budget_tokens and the prompt's room - this prompt without recall. The answer keeps a
+        quarter of the context (at least 1,024 tokens), and the prompt's room is four fifths of the rest: the
+        quarter to spare that check_fits and answer_room keep, so the answer's limit still leaves the answer its
+        quarter. With under about 1,000 tokens of room the budget is None: recall is skipped."""
         room = (context - max(context // 4, 1024)) * 4 // 5 - prompt_size(bare)
         if room < 1000:
+            return None, room
+        return min(self.config.recall_budget_tokens, room), room
+
+    def recall(self, query, bare):
+        """RECALL in the room the model's context leaves (budget). With too little room, recall is skipped, and
+        you and the model are told."""
+        context = context_of(self.config, self.model)
+        budget, room = self.budget(bare, context)
+        if budget is None:
             self.notes.append(f"recall skipped: this session leaves ~{max(room, 0):,} tokens of the model's "
                               f"{context:,}-token context")
             return Recalled("(none: this session has filled the context, so recall was skipped)", [], "")
-        budget = min(self.config.recall_budget_tokens, room)
         pack = self.memory.recall(query, budget)
         for sid, score, tokens in getattr(pack, "skipped", []):
             self.notes.append(f"recall skipped session {sid} (score {score:.4f}): ~{tokens:,} tokens, more than "
                               f"was left of this turn's {budget:,}-token budget, and a session is never cut")
         return pack
+
+    def preview(self, message):
+        """Read-only, for `recall WORDS`: the prompt without recall that a chat turn with this message would build
+        now (handle): the instructions, the beliefs, the intention, and this session with the message as its
+        newest turn. The rows that turn would write are predicted, never written: the message's turn, and the
+        intention if it is new. An idle session would end first, so the turn would start a new one."""
+        store = self.store
+        desire, intention = bdi.choose(store)
+        if desire is not None and intention is None:          # the turn writes it down first (pick_intention)
+            intention = {"id": store.next_id("intentions"), "text": desire["text"]}
+        session = None if self.idle_session() else store.open_session()
+        this = render_session(store, session["id"]) if session else heading(store.next_id("sessions"), store.now())
+        turn = {"id": store.next_id("turns"), "role": "user", "text": clean(message)}
+        return bdi.act_messages("", bdi.current_beliefs(store), intention, this + "\n" + turn_line(turn))
 
     def handle(self, message):
         """One turn of the loop. Returns the agent's reply."""

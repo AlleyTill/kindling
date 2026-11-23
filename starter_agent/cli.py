@@ -8,7 +8,7 @@ from . import bdi, curiosity
 from .agent import Agent, utc_now
 from .config import load_config
 from .embed import HashEmbedder, make_embedder
-from .models import ModelError, make_model
+from .models import ModelError, clean, known_window, make_model
 from .recall import render_session
 from .store import Store, local
 
@@ -196,13 +196,28 @@ def cmd_curious(agent, a):
 
 
 def cmd_recall(agent, a):
-    pack = agent.memory.recall(" ".join(a.query), agent.config.recall_budget_tokens)
-    for session, score in pack.sessions:
-        print(f"session {session}  score {score:.4f}  ({pack.scored_by})")
-    for session, score, tokens in pack.skipped:
-        print(f"session {session}  score {score:.4f}  skipped: ~{tokens:,} tokens, more than was left of the "
-              f"{agent.config.recall_budget_tokens:,}-token budget (a session is never cut)")
-    print(f"\n{pack.text}" if pack.sessions else "Nothing recalled.")
+    """What recall would hand the model for these words. Where the window is known without asking a server
+    (known_window), packed to the budget a chat turn with these words would have now; elsewhere to
+    recall_budget_tokens, and it says so: it never asks a server, and a chat turn there may pack less."""
+    query = clean(" ".join(a.query))
+    budget, context = agent.config.recall_budget_tokens, known_window(agent.config)
+    if context:
+        budget, room = agent.budget(agent.preview(query), context)
+    if budget is None:
+        print(f"Nothing recalled: a chat turn now would skip recall, since this session would leave it ~"
+              f"{max(room, 0):,} tokens of the model's {context:,}-token context.")
+    else:
+        pack = agent.memory.recall(query, budget)
+        for session, score in pack.sessions:
+            print(f"session {session}  score {score:.4f}  ({pack.scored_by})")
+        for session, score, tokens in pack.skipped:
+            print(f"session {session}  score {score:.4f}  skipped: ~{tokens:,} tokens, more than was left of the "
+                  f"{budget:,}-token budget (a session is never cut)")
+        print(f"\n{pack.text}" if pack.sessions else "Nothing recalled.")
+    if not context:
+        print(f'(Packed to "recall_budget_tokens", {budget:,}: this model\'s window isn\'t known without asking its '
+              'server, which `recall` never does, so a chat turn may pack less. Set "context_tokens" in agent.json '
+              "to see what a chat turn would.)")
     idle = agent.idle_session()
     if idle:
         print(f"(Session {idle['id']} is idle but still open, so it isn't recalled yet; "

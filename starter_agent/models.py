@@ -83,6 +83,12 @@ def context_of(config, model=None):
     return (window() if window else None) or CONTEXT.get(config.backend, 12288)
 
 
+def known_window(config):
+    """The window where it is known without asking a server (`recall WORDS` asks none): "context_tokens" if you
+    set it; else the fake model's, or the one Kindling asks Ollama for. None where only the server can say."""
+    return context_of(config) if config.context_tokens or config.backend in ("fake", "ollama") else None
+
+
 def reported_window(config, model):
     """True when the window in use is the one the model's server said it has (not agent.json's, not the one
     Kindling asks Ollama for, not one it assumed): then raising context_tokens past it is wrong advice, and a
