@@ -1122,3 +1122,29 @@ def test_the_readme_names_llama_cpps_ceiling_and_anthropics_fixed_limit(wire, tm
         assert outcome(Agent(Store(str(tmp_path / f"a{window}.db"), Clock()), Anthropic(), HashEmbedder(),
                              Config(backend="anthropic", context_tokens=window)).handle, "hi") == "ok"
         assert wire.sent[-1][1]["max_tokens"] == fixed
+
+
+# --- Round 8: the quarter holds with beliefs and an intention in the prompt (r7 verifier's W4; CC's call) --------
+
+@pytest.mark.parametrize("window", [4096, 12288])
+@pytest.mark.parametrize("server", ["ollama", "llama.cpp"])
+def test_with_many_beliefs_and_an_intention_the_answer_keeps_its_quarter(wire, tmp_path, server, window):
+    """The r7 verifier's test, adopted: recall's room is taken from the whole prompt without recall (the
+    instructions, the beliefs, the intention and this session). With the beliefs left out of it (its W4), recall
+    overfilled the prompt, and the answer got 401 tokens at 4,096, not 1,028."""
+    from starter_agent import bdi
+    full = Full()
+    agent = agent_on(wire, tmp_path, server, window, memory=full, recall_budget_tokens=10**6)
+    many = 4 if window < 8000 else 12                                    # beliefs of ~115 tokens each
+    sid, (turn,) = add_session(agent.store, [("user", "remember these")])
+    for i in range(many):
+        agent.store.append("beliefs", {"text": f"belief {i}: " + "the mice weigh less after the night feed " * 11,
+                                       "confidence": 0.6, "evidence": json.dumps([turn]), "session_id": sid,
+                                       "flag": None})
+    bdi.add_desire(agent.store, "Find out why the mice lose weight at night, cage by cage, " + "and by diet " * 30)
+    assert agent.handle("why do the mice lose weight?") == "ok"
+    prompt = wire.sent[-1][1]["messages"][-1]["content"]
+    assert prompt.count("the night feed") == 11 * many and prompt.count("and by diet") == 30    # both are in it
+    size, room = sent_last(wire)
+    assert full.budget > 1000 and share_of(window) - 3 <= size <= share_of(window), (full.budget, size)  # it's full
+    assert room >= window // 4 and room >= 1024, (room, window)

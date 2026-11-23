@@ -674,6 +674,11 @@ MUTANTS = [
         "a llama.cpp window over 64,000 tokens", "a llama.cpp window over 128,000 tokens")]),
     ("the README names Anthropic's fixed 16,000", "README.md", [(
         "Anthropic's limit is a fixed 16,000", "Anthropic's limit is a fixed 32,000")]),
+    # --- Round 8: the quarter holds with beliefs and an intention in the prompt (r7 verifier's W4; CC's call) ----
+    ("W4 recall's room is taken from a prompt that holds the beliefs", "starter_agent/agent.py", [(
+        'bdi.act_messages("", beliefs, intention, this)', 'bdi.act_messages("", [], intention, this)')]),
+    ("recall's room is taken from a prompt that holds the intention", "starter_agent/agent.py", [(
+        'bdi.act_messages("", beliefs, intention, this)', 'bdi.act_messages("", beliefs, None, this)')]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

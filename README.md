@@ -242,7 +242,7 @@ check and the answer's limit keep (below). So with recall full, the answer's lim
 Ollama, and on llama.cpp up to its 16,000-token ceiling: a llama.cpp window over 64,000 tokens leaves the
 answer 16,000, less than a quarter. Anthropic's limit is a fixed 16,000 whatever the window, and other
 servers get no limit from Kindling (below). Recall gets what the rest of the prompt (this session, the
-beliefs, the instructions) leaves of that. In a
+beliefs, the intention, the instructions) leaves of that. In a
 4,096-token window, recall fills the prompt to at most 2,457 tokens, leaving the answer at least 1,024.
 With under about 1,000 tokens left, recall is skipped and you're told; past that, a longer session leaves
 the answer less, until the length check refuses the prompt.
