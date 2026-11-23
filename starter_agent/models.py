@@ -173,13 +173,27 @@ def is_local(url):
         return False
 
 
+OPENERS = {}     # urllib's openers, built once per process: {whether the address is local: its opener}
+
+
+def opener_for(url):
+    """urllib's opener for this address, built once per process: building one loads the system's certificates,
+    about 150 ms of CPU each time (r7 fixer, measured 21 Nov). A local address gets its own, which never goes
+    through a proxy set in your environment (http_proxy), so a local model stays on your machine. The proxy
+    settings are read when the opener is built, so once per run."""
+    local = is_local(url)
+    if local not in OPENERS:
+        OPENERS[local] = urllib.request.build_opener(*([urllib.request.ProxyHandler({})] if local else []))
+    return OPENERS[local]
+
+
 def fetch_json(url, body=None, headers=None, timeout=600):
     """POST `body` as JSON (with no body, GET); return the reply's JSON. A local address never goes through
-    a proxy set in your environment (http_proxy), so a local model stays on your machine."""
+    a proxy set in your environment (http_proxy), so a local model stays on your machine (opener_for)."""
     request = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
                                      method="GET" if body is None else "POST",
                                      headers={"Content-Type": "application/json", **(headers or {})})
-    opener = urllib.request.build_opener(*([urllib.request.ProxyHandler({})] if is_local(url) else []))
+    opener = opener_for(url)
     try:
         with opener.open(request, timeout=timeout) as response:
             raw = response.read()

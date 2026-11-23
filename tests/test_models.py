@@ -1000,8 +1000,9 @@ HOSTILE = {"object": "error", "message": "maximum context length is 1 tokens " *
 def test_a_280_kb_hostile_error_body_is_read_in_under_a_second(wire, monkeypatch, backend):
     """The r6 verifier's LOW: VLLM_TOO_LONG over the whole of a 280 KB body like this one was still running at 120 s
     (its lazy gap after a literal prefix is quadratic). Now it searches only the body's first 2,000 characters.
-    The opener is a bare one here, so the second timed is the body's: a real opener loads the system's
-    certificates each request (about 150 ms of CPU each, measured here, 21 Nov), which under load ran past it."""
+    The opener is a bare one here, so the second timed is the body's: building a real opener loads the system's
+    certificates (about 150 ms of CPU, measured here, 21 Nov), which under load ran past it. Kindling builds one
+    once per run (opener_for), and each test starts as a new run."""
     assert len(json.dumps(HOSTILE)) >= 280_000
     monkeypatch.setattr(models.urllib.request, "build_opener", lambda *handlers: models.urllib.request.OpenerDirector())
     wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
@@ -1060,3 +1061,41 @@ def test_curiositys_note_on_an_assumed_openai_window_says_raise_context_tokens(w
     wire.reply = {"choices": [{"message": {"content": '{"questions": []}'}}]}
     agent.end_session()
     assert agent.notes == [f"curiosity, session {sid}: read turns 2-2 of 2; raise context_tokens to read all"]
+
+
+# --- Round 8: urllib's openers are built once per process (r7 fixer's open question; CC's call) --------------
+# Building an opener loads the system's certificates (about 150 ms of CPU, measured 21 Nov): once per run is enough.
+
+def test_two_requests_share_one_opener_built_once_per_process(wire, monkeypatch):
+    built, used = [], []
+    real_build, real_open = models.urllib.request.build_opener, models.urllib.request.OpenerDirector.open
+    monkeypatch.setattr(models.urllib.request, "build_opener", lambda *handlers: built.append(handlers) or
+                        real_build(*handlers))
+    monkeypatch.setattr("urllib.request.OpenerDirector.open", lambda opener, request, timeout=None: used.append(
+        opener) or real_open(opener, request, timeout))                           # the wire's, recording the opener
+    wire.facts[OLLAMA_VERSION] = {"version": "0.32.1"}
+    wire.reply = {"message": {"content": "ok"}}
+    model = Ollama()
+    assert model.complete(MESSAGES) == "ok" and model.complete(MESSAGES) == "ok"
+    assert wire.methods == ["GET", "POST", "POST"] and len(used) == 3               # the version, then two messages
+    assert len(built) == 1 and all(opener is used[0] for opener in used), (built, used)
+
+
+def test_a_local_address_never_borrows_the_proxied_opener_of_an_earlier_request(monkeypatch):
+    """Built once per run, the openers are still two: one for another machine (through your proxy, as before) and
+    one for this computer (never through it). A local request after a remote one still goes straight here."""
+    monkeypatch.setenv("http_proxy", "http://203.0.113.50:3128")
+    monkeypatch.delenv("no_proxy", raising=False)
+    tried = []
+
+    def connect(sock, address):
+        tried.append(address[0])
+        raise ConnectionRefusedError("nothing listening (the test)")
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, *a, **k: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1" if host == "localhost" else host, port))])
+    for url in ("http://models.example.org/v1/models", "http://localhost:11434/api/chat",
+                "http://models.example.org/v1/models", "http://localhost:11434/api/chat"):
+        assert isinstance(outcome(models.fetch_json, url, {}), OSError)
+    assert tried == ["203.0.113.50", "127.0.0.1"] * 2                               # remote by the proxy; local not
+    assert len(models.OPENERS) == 2

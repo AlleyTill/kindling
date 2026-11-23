@@ -66,7 +66,8 @@ def no_network(monkeypatch):
 @pytest.fixture(autouse=True)
 def fresh_process(monkeypatch):
     """Each test starts as a new run of Kindling would: no server asked anything yet, no note printed yet, no
-    risk of a cut known yet, and no count kept for the log."""
+    risk of a cut known yet, no count kept for the log, and no opener built yet."""
+    monkeypatch.setattr(models, "OPENERS", {})
     monkeypatch.setattr(models, "ASKED", {})
     monkeypatch.setattr(models, "TOLD", set())
     monkeypatch.setattr(models, "RISKS", [])

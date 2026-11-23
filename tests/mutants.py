@@ -332,7 +332,7 @@ MUTANTS = [
         '    return f"{embedder.name}:{zlib.crc32(json.dumps(probe).encode()):08x}"', "    return embedder.name")]),
     # --- Round 3: keys, proxies and replies ------------------------------------------------------------
     ("a local address ignores a proxy in the environment", "starter_agent/models.py", [(
-        "*([urllib.request.ProxyHandler({})] if is_local(url) else [])", "*[]")]),
+        "*([urllib.request.ProxyHandler({})] if local else [])", "*[]")]),
     ("an HTTP error shows what the server said", "starter_agent/models.py", [(
         "{error.code}: {said[:300]}\")", "{error.code}: \")")]),
     ("a reply that isn't JSON is a model error", "starter_agent/models.py", [(
@@ -664,6 +664,11 @@ MUTANTS = [
     ("R7 reported_window asks whether a window was reported, not whether it could be", "starter_agent/models.py", [(
         "    return not config.context_tokens and bool(reported and reported())",
         "    return not config.context_tokens and bool(reported)")]),
+    # --- Round 8: urllib's openers, built once per process (CC's call) ---------------------------------------
+    ("urllib's openers are built once per process, not per request", "starter_agent/models.py", [(
+        "    if local not in OPENERS:\n", "    if True:\n")]),
+    ("a local request never borrows the proxied opener of an earlier remote one", "starter_agent/models.py", [(
+        "    return OPENERS[local]\n", "    return next(iter(OPENERS.values()))\n")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),
