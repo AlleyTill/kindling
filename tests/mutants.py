@@ -669,6 +669,11 @@ MUTANTS = [
         "    if local not in OPENERS:\n", "    if True:\n")]),
     ("a local request never borrows the proxied opener of an earlier remote one", "starter_agent/models.py", [(
         "    return OPENERS[local]\n", "    return next(iter(OPENERS.values()))\n")]),
+    # --- Round 8: the README names where the answer's limit is less than its quarter (CC's call) -----------------
+    ("the README says a llama.cpp window over 64,000 tokens leaves the answer less than a quarter", "README.md", [(
+        "a llama.cpp window over 64,000 tokens", "a llama.cpp window over 128,000 tokens")]),
+    ("the README names Anthropic's fixed 16,000", "README.md", [(
+        "Anthropic's limit is a fixed 16,000", "Anthropic's limit is a fixed 32,000")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

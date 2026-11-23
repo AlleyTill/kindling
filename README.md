@@ -238,8 +238,11 @@ stops the agent with a message that names the setting.
 **The context window, and long sessions.** Each turn's recall budget is the smaller of
 `recall_budget_tokens` and what the model's context leaves. The answer keeps a quarter of the context (at
 least 1,024 tokens), and the prompt may take four fifths of the rest: the quarter to spare that the length
-check and the answer's limit keep (below), so with recall full the answer still gets its quarter. Recall
-gets what the rest of the prompt (this session, the beliefs, the instructions) leaves of that. In a
+check and the answer's limit keep (below). So with recall full, the answer's limit is still its quarter on
+Ollama, and on llama.cpp up to its 16,000-token ceiling: a llama.cpp window over 64,000 tokens leaves the
+answer 16,000, less than a quarter. Anthropic's limit is a fixed 16,000 whatever the window, and other
+servers get no limit from Kindling (below). Recall gets what the rest of the prompt (this session, the
+beliefs, the instructions) leaves of that. In a
 4,096-token window, recall fills the prompt to at most 2,457 tokens, leaving the answer at least 1,024.
 With under about 1,000 tokens left, recall is skipped and you're told; past that, a longer session leaves
 the answer less, until the length check refuses the prompt.

@@ -1099,3 +1099,26 @@ def test_a_local_address_never_borrows_the_proxied_opener_of_an_earlier_request(
         assert isinstance(outcome(models.fetch_json, url, {}), OSError)
     assert tried == ["203.0.113.50", "127.0.0.1"] * 2                               # remote by the proxy; local not
     assert len(models.OPENERS) == 2
+
+
+# --- Round 8: the README names where the answer's limit is less than its quarter (r7 verifier's LOW; CC's call) ---
+
+def test_the_readme_names_llama_cpps_ceiling_and_anthropics_fixed_limit(wire, tmp_path, monkeypatch):
+    """'With recall full the answer still gets its quarter' overstated: llama.cpp's limit is at most MOST_ANSWER, so a
+    window over four times that leaves the answer less than a quarter, and Anthropic's is MOST_ANSWER at any window."""
+    readme = " ".join((Path(__file__).parent.parent / "README.md").read_text().split())
+    ((ceiling, over, leaves),) = re.findall(r"and on llama\.cpp up to its ([\d,]+)-token ceiling: a llama\.cpp window "
+                                            r"over ([\d,]+) tokens leaves the answer ([\d,]+), less than a quarter", readme)
+    (fixed,) = re.findall(r"Anthropic's limit is a fixed ([\d,]+) whatever the window", readme)
+    ceiling, over, leaves, fixed = (int(n.replace(",", "")) for n in (ceiling, over, leaves, fixed))
+    assert ceiling == leaves == fixed == models.MOST_ANSWER and over == 4 * models.MOST_ANSWER
+    for window in (over, 2 * over):                                   # at the edge: a quarter; past it: the ceiling
+        assert agent_on(wire, tmp_path, "llama.cpp", window, memory=Full(), recall_budget_tokens=10**6).handle("hi") == "ok"
+        _, room = sent_last(wire)
+        assert room == min(window // 4, ceiling) and (room < window // 4) == (window > over), (window, room)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    wire.reply = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}
+    for window in (2048, 1_000_000):
+        assert outcome(Agent(Store(str(tmp_path / f"a{window}.db"), Clock()), Anthropic(), HashEmbedder(),
+                             Config(backend="anthropic", context_tokens=window)).handle, "hi") == "ok"
+        assert wire.sent[-1][1]["max_tokens"] == fixed
