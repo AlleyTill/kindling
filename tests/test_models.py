@@ -603,12 +603,12 @@ def test_anthropics_max_tokens_stop_says_the_answer_hit_its_limit(wire, capsys, 
 
 
 @pytest.mark.parametrize("settings, bigger", [({}, "start the server with a bigger window"),
-                                              ({"context_tokens": 600}, "raise context_tokens")],
+                                              ({"context_tokens": 2000}, "raise context_tokens")],
                          ids=["the server's own window", "agent.json's window"])
 def test_curiositys_note_says_how_to_read_all_by_where_the_window_came_from(wire, tmp_path, settings, bigger):
     """CC's call (r5 open question; Lyra's wording stays otherwise): past a window the server reported, raising
     context_tokens is wrong advice, so the note says to start the server with a bigger window."""
-    agent = openai_agent(wire, tmp_path, {LLAMA_PROPS: {"n_ctx": 600}}, **settings)       # 600 either way
+    agent = openai_agent(wire, tmp_path, {LLAMA_PROPS: {"n_ctx": 2000}}, **settings)      # 2,000 either way
     first, _ = add_session(agent.store, [("user", "a"), ("agent", "why do rats sleep by day?"), ("user", "b"),
                                          ("agent", "word " * 2000), ("user", "c"), ("agent", "why is the sky blue?")])
     second, _ = add_session(agent.store, [("user", "tell me everything"), ("agent", "word " * 3000)])
@@ -1224,3 +1224,88 @@ def test_next_id_is_the_id_sqlite_gives_the_next_row(tmp_path):
     predicted = store.next_id("intentions")
     assert predicted == store.append("intentions", {"text": "z", "serves": 1, "status": "active", "evidence": "[]",
                                                     "flag": None}) == 2
+
+
+# --- Round 8: curiosity's answer keeps its quarter, and an answer cut off never marks its session read (r7 verifier's
+#     MEDIUM; CC's call) ---------------------------------------------------------------------------------------------
+
+def finished(server, text, finish="stop"):
+    """A reply from Ollama or llama.cpp with this text, finished this way."""
+    if server == "ollama":
+        return {"message": {"content": text}, "done_reason": finish}
+    return {"choices": [{"message": {"content": text}, "finish_reason": finish}]}
+
+
+def day(store, window, share):
+    """A finished session whose agent turns (about 150 tokens each) come to about this share of the window."""
+    turns = []
+    for i in range(int(window * share) // 150):
+        turns += [("user", f"go on {i}"), ("agent", f"part {i}: " + "word " * 115)]
+    sid, _ = add_session(store, turns)
+    return sid, [t for t in store.turns(sid) if t["role"] == "agent"]
+
+
+def cut_rows(store):
+    return [row[0] for row in store.db.execute("SELECT reason FROM log WHERE kind='curiosity cut' ORDER BY id")]
+
+
+@pytest.mark.parametrize("length", [0.7, 1.5], ids=["over the share", "longer than the window"])
+@pytest.mark.parametrize("window", [4096, 12288, 32768])
+@pytest.mark.parametrize("server", ["ollama", "llama.cpp"])
+def test_curiositys_answer_keeps_a_quarter_of_the_window_with_a_long_session(wire, tmp_path, server, window, length):
+    """The r7 verifier's MEDIUM: curiosity filled its prompt to the length check's edge, so its answer's limit
+    (answer_room) came to a median of ~260 tokens at any window, sometimes under 30, and a cut answer lost that
+    session's questions. Its prompt now takes recall's share, so its answer keeps a quarter of the window."""
+    agent = agent_on(wire, tmp_path, server, window)
+    wire.reply = finished(server, '{"questions": []}')
+    day(agent.store, window, length)
+    agent.end_session()
+    size, room = sent_last(wire)
+    assert len(wire.sent) == 1 and share_of(window) - 160 < size <= share_of(window), (size, share_of(window))
+    assert room >= window // 4 and room >= 1024, (room, window)
+    assert agent.store.unread_sessions() == [] and "read turns" in only(agent.notes), agent.notes
+
+
+@pytest.mark.parametrize("server", ["ollama", "llama.cpp"])
+def test_an_answer_cut_off_leaves_its_session_unread_and_the_next_end_reads_fewer_turns(wire, tmp_path, server):
+    from starter_agent import curiosity
+    agent = agent_on(wire, tmp_path, server, 4096)
+    sid, mine = day(agent.store, 4096, 0.5)                               # read whole at first: ~2,000 tokens
+    asked = {"text": "Why does the last part repeat?", "quote": "word word", "turn": mine[-1]["id"]}
+    wire.reply = finished(server, '{"questions": [{"text": "Why does the last', "length")    # cut part way
+    agent.end_session()
+    assert [s["id"] for s in agent.store.unread_sessions()] == [sid] and curiosity.open_questions(agent.store) == []
+    assert "was cut off: it stopped at its length limit" in only(cut_rows(agent.store))
+    assert agent.notes == [f"curiosity, session {sid}: the answer was cut off (it stopped at its length limit), so the "
+                           "session stays unread; the next session end reads it again, fewer turns at a time (see: log)"]
+    wire.reply = finished(server, json.dumps({"questions": [asked]}))
+    agent.end_session()
+    assert agent.store.unread_sessions() == [] and len(cut_rows(agent.store)) == 1
+    assert [q["source_turn"] for q in curiosity.open_questions(agent.store)] == [asked["turn"]]   # no question lost
+    bodies = [body for _, body, _ in wire.sent]
+    sizes = [models.prompt_size(body["messages"]) for body in bodies]
+    rooms = [body["options"]["num_predict"] if "options" in body else body["max_tokens"] for body in bodies]
+    read = [body["messages"][-1]["content"].count("] agent: ") for body in bodies]
+    bare = models.prompt_size(curiosity.prompt([]))
+    assert len(bodies) == 2 and read[0] == len(mine) > read[1] > 0, read                 # fewer turns, the newest
+    assert sizes[1] <= bare + (sizes[0] - bare) // 2 and rooms[1] > rooms[0], (sizes, rooms)
+
+
+def test_a_length_finish_is_an_answer_cut_off_even_when_its_json_is_whole(wire, tmp_path):
+    from starter_agent import curiosity
+    agent = agent_on(wire, tmp_path, "ollama", 4096)
+    sid, mine = day(agent.store, 4096, 0.2)
+    whole = json.dumps({"questions": [{"text": "Why?", "quote": "word word", "turn": mine[-1]["id"]}]})
+    wire.reply = finished("ollama", whole, "length")
+    agent.end_session()
+    assert [s["id"] for s in agent.store.unread_sessions()] == [sid] and curiosity.open_questions(agent.store) == []
+    assert "was cut off: it stopped at its length limit" in only(cut_rows(agent.store))
+
+
+def test_a_chat_answer_that_stopped_short_is_not_taken_for_curiositys(wire, tmp_path):
+    agent = agent_on(wire, tmp_path, "ollama", 4096)
+    wire.reply = finished("ollama", "a long answ", "length")
+    assert agent.handle("tell me everything") == "a long answ"               # stopped at its limit, and said so
+    wire.reply = finished("ollama", '{"questions": []}')
+    agent.end_session()
+    assert agent.store.unread_sessions() == [] and cut_rows(agent.store) == []

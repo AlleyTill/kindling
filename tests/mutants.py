@@ -535,15 +535,15 @@ MUTANTS = [
         "for found in (said, nested) if", "for found in (said,) if")]),
     # --- Round 5: Lyra's rule for a session too long for curiosity (20 Nov) --------------------------------
     ("a session too long is read in part, not skipped", "starter_agent/curiosity.py", [(
-        "    except PromptTooLong:\n        pass\n", "    except PromptTooLong:\n        return []\n")]),
+        "    block, used = [], bare\n", "    return []\n    block, used = [], bare\n")]),
     ("the part read is the NEWEST turns", "starter_agent/curiosity.py", [(
         "    for turn in reversed(mine):            # newest first", "    for turn in mine:")]),
     ("turns are never stitched together past one that doesn't fit", "starter_agent/curiosity.py", [(
         "            break                          # and stop: a turn past the gap is never stitched on",
         '            used -= estimate_tokens(turn_line(turn) + "\\n")\n            continue')]),
     ("a session that fits is read whole", "starter_agent/curiosity.py", [(
-        "        check_fits(prompt(mine), context)\n        return mine\n",
-        "        check_fits(prompt(mine), context)\n        return mine[1:]\n")]),
+        "    if prompt_size(prompt(mine)) <= limit:\n        return mine\n",
+        "    if prompt_size(prompt(mine)) <= limit:\n        return mine[1:]\n")]),
     ("the log records the turns read and skipped", "starter_agent/curiosity.py", [(
         '    store.log(session_id, "curiosity read part", reason,', '    (session_id, "curiosity read part", reason,')]),
     ("the note gives the turns read: k-n of m", "starter_agent/curiosity.py", [(
@@ -556,7 +556,8 @@ MUTANTS = [
         "        store.mark_read(session_id)\n",
         "        if len(block) == len(mine):\n            store.mark_read(session_id)\n")]),
     ("a question may cite only a turn that was read", "starter_agent/curiosity.py", [(
-        "queue(store, embedder, config, session_id, read, raw)", "queue(store, embedder, config, session_id, mine, raw)")]),
+        "queue(store, embedder, config, session_id, read, questions)",
+        "queue(store, embedder, config, session_id, mine, questions)")]),
     ("a server's refusal in curiosity is caught there, and the session marked read", "starter_agent/curiosity.py", [(
         "        except PromptTooLong as error:     # the server counted", "        except ZeroDivisionError as error:  #")]),
     ("a refused block counts as no turn read", "starter_agent/curiosity.py", [(
@@ -600,7 +601,7 @@ MUTANTS = [
         ('        print(f"Note: {said}, over a quarter more.', '        note_once(key="more", text=f"Note: {said}, over a quarter more.'),
         ('"let through a prompt too long for the window.", file=sys.stderr)', '"let through a prompt too long for the window.")')]),
     ("M31 a session that fits whole is read whole, by the whole-prompt check", "starter_agent/curiosity.py", [(
-        "    try:\n        check_fits(prompt(mine), context)\n        return mine\n    except PromptTooLong:\n        pass\n", "")]),
+        "    if prompt_size(prompt(mine)) <= limit:\n        return mine\n", "")]),
     # --- Round 6: the answer cap only for a server that shifts, with the quarter to spare (CC's call) -----
     ("no max_tokens to vLLM, which refuses rather than shifts", "starter_agent/models.py", [(
         '        if kind != "llama.cpp":\n            return None\n', "        if kind is None:\n            return None\n")]),
@@ -697,6 +698,39 @@ MUTANTS = [
         'intention, this + "\\n" + turn_line(turn))', "intention, this)")]),
     ("next_id never hands out an id SQLite has already given (sessions, turns)", "starter_agent/store.py", [(
         "        return max(given[0] if given else 0, used or 0) + 1", "        return (used or 0) + 1")]),
+    # --- Round 8: curiosity's answer keeps its quarter; an answer cut off never marks its session read (CC's call) ----
+    ("curiosity's prompt takes recall's share, so its answer keeps its quarter", "starter_agent/curiosity.py", [(
+        "    return (context - max(context // 4, 1024)) * 4 // 5\n", "    return context * 4 // 5\n")]),
+    ("curiosity's share keeps at least 1,024 tokens for the answer", "starter_agent/curiosity.py", [(
+        "    return (context - max(context // 4, 1024)) * 4 // 5\n", "    return (context - context // 4) * 4 // 5\n")]),
+    ("a 'length' finish is an answer cut off", "starter_agent/curiosity.py", [(
+        "if raw is not None and (stopped or questions is None):", "if raw is not None and questions is None:")]),
+    ("a reply with no list of questions is an answer cut off", "starter_agent/curiosity.py", [(
+        "    return questions if isinstance(questions, list) else None\n",
+        "    return questions if isinstance(questions, list) else []\n")]),
+    ("an answer cut off never marks its session read", "starter_agent/curiosity.py", [(
+        "            cut_off(store, session_id, mine, block, raw, stopped, notes)\n            return []\n",
+        "            cut_off(store, session_id, mine, block, raw, stopped, notes)\n            store.mark_read(session_id)\n"
+        "            return []\n")]),
+    ("an answer cut off queues none of its questions", "starter_agent/curiosity.py", [(
+        "            cut_off(store, session_id, mine, block, raw, stopped, notes)\n            return []\n",
+        "            cut_off(store, session_id, mine, block, raw, stopped, notes)\n"
+        "            return queue(store, embedder, config, session_id, block, questions or [])\n")]),
+    ("after a cut, the next read takes at most half as much", "starter_agent/curiosity.py", [(
+        "    limit = share(context) if before is None else min(share(context), bare + (before - bare) // 2)",
+        "    limit = share(context)")]),
+    ("the cut is logged, and sizes the next read", "starter_agent/curiosity.py", [(
+        '    store.log(session_id, "curiosity cut",', '    (session_id, "curiosity cut",')]),
+    ("you're told when an answer was cut off", "starter_agent/curiosity.py", [(
+        '        notes.append(f"curiosity, session {session_id}: the answer was cut off',
+        '        str(f"curiosity, session {session_id}: the answer was cut off')]),
+    ("a read emptied by cuts says so", "starter_agent/curiosity.py", [(
+        '("its answers were cut off, and a smaller read holds none of its turns" if before',
+        '("its answers were cut off, and a smaller read holds none of its turns" if False')]),
+    ("an answer that stopped before curiosity's call isn't taken for its own", "starter_agent/curiosity.py", [(
+        "        take_stopped()                     # forget an answer that stopped before this call (a chat turn's)\n",
+        "")]),
+    ("a 'length' finish is recorded for curiosity", "starter_agent/models.py", [("    STOPPED.append(room)\n", "")]),
     # --- Round 3: this harness --------------------------------------------------------------------------
     ("the snapshot copies only the code", "tests/mutants.py", [(
         "    for name in CODE:\n", "    for name in [p.name for p in root.iterdir()]:\n")]),

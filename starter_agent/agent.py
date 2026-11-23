@@ -129,7 +129,8 @@ class Agent:
     def end_session(self):
         """End the open session; then curiosity reads every ended session it hasn't read yet: this one, and
         any whose read failed before. A session too long for one call is read in part, and you're told
-        once (curiosity.run). Returns the new question ids."""
+        once (curiosity.run); one whose answer was cut off stays unread, and is read again here with fewer
+        turns (curiosity.cut_off). Returns the new question ids."""
         session = self.store.open_session()
         if session:
             self.store.end_session(session["id"])

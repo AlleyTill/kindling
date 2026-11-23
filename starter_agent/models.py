@@ -288,10 +288,22 @@ def whole_number_at(found, *path):
     return found if type(found) is int and found > 0 else None
 
 
+STOPPED = []     # answers that stopped at their length limit since the last take_stopped (curiosity asks)
+
+
 def stopped_short(room, then):
     """The server says the answer stopped at its length limit: say so, and what to do about it."""
+    STOPPED.append(room)
     print(f"WARNING: the answer hit the room left for it ({room}) and stopped there, so it may end part way. "
           f"{then}.", file=sys.stderr)
+
+
+def take_stopped():
+    """Whether an answer stopped at its length limit since the last call, which then forgets it. Curiosity never
+    takes such an answer as read (curiosity.cut_off)."""
+    stopped = bool(STOPPED)
+    STOPPED.clear()
+    return stopped
 
 
 def key_for(name, usual, base_url):

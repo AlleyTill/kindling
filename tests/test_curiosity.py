@@ -225,13 +225,17 @@ def test_curiosity_7b_a_skipped_twin_names_the_embedder_that_judged_it(make_agen
 
 
 def test_curiosity_8_a_fenced_reply_is_read_and_one_it_cannot_use_is_logged(make_agent):
+    """Round 8 (CC's call): a reply with no list of questions is an answer cut off, so its session stays unread."""
     store = make_agent().store
     fenced = '```json\n{"questions": [{"text": "Why does it fail?", "quote": "not sure why", "turn": 2}]}\n```'
     assert len(run_with(store, fenced)) == 1
     assert run_with(store, '{"questions": "none"}') == []
     assert run_with(store, '{"questions": [{"quote": "not sure why", "turn": 6}]}') == []
     assert [(r["kind"], r["reason"]) for r in store.db.execute("SELECT * FROM log")] == [
-        ("rejected", "curiosity's reply had no list of questions"), ("rejected question", "no question text")]
+        ("curiosity cut", "the answer to agent turns 1-1 of 1 (turn ids 4-4) was cut off: its reply had no list of "
+         "questions; the session stays unread, and the next session end reads fewer turns"),
+        ("rejected question", "no question text")]
+    assert [s["id"] for s in store.unread_sessions()] == [2]
 
 
 def test_curiosity_9_only_an_open_question_can_be_dropped_and_adopting_is_one_step(make_agent, monkeypatch):
@@ -282,13 +286,22 @@ def long_session(store, n=10):
     return sid, [t for t in store.turns(sid) if t["role"] == "agent"]
 
 
-def room_for(mine, newest):
-    """A context with room for the newest `newest` agent turns and half of the next older one, by the same
-    reckoning check_fits uses (the prompt with a quarter to spare)."""
+def window_for(prompt_tokens):
+    """The smallest context whose prompt share (curiosity.share, as recall's: CC's call) is at least this."""
+    from itertools import count
+    return next(context for context in count(1) if curiosity.share(context) >= prompt_tokens)
+
+
+def priced(mine):
+    """Curiosity's prompt for these turns, priced as newest_that_fit prices a part: the instructions, then each turn."""
     from starter_agent.models import estimate_tokens
     from starter_agent.recall import turn_line
-    costs = [estimate_tokens(turn_line(t) + "\n") for t in mine]
-    return (estimate_tokens(curiosity.SYSTEM) + sum(costs[-newest:]) + costs[-newest - 1] // 2) * 5 // 4 + 1
+    return estimate_tokens(curiosity.SYSTEM) + sum(estimate_tokens(turn_line(t) + "\n") for t in mine)
+
+
+def room_for(mine, newest):
+    """A context whose prompt share has room for the newest `newest` agent turns and half of the next older one."""
+    return window_for((priced(mine[-newest:]) + priced(mine[-newest - 1:])) // 2)
 
 
 def part_rows(store):
@@ -303,9 +316,9 @@ def test_curiosity_12_a_session_too_long_is_read_in_part_said_once_and_marked_re
     sid, mine = long_session(agent.store)
     agent.config.context_tokens = room_for(mine, newest=5)
     ids = [t["id"] for t in mine]
-    assert check_fits(curiosity.prompt(mine[5:]), agent.config.context_tokens) is None        # the fixture: five fit,
-    with pytest.raises(PromptTooLong):                                                      # six don't
-        check_fits(curiosity.prompt(mine[4:]), agent.config.context_tokens)
+    room = curiosity.share(agent.config.context_tokens)
+    assert priced(mine[5:]) <= room < priced(mine[4:])                    # the fixture: five fit, six don't,
+    assert check_fits(curiosity.prompt(mine), agent.config.context_tokens) is None    # though all ten pass check_fits
     assert agent.end_session() == []
     assert seen == [ids[5:]]                                    # the newest five, as one block
     assert agent.notes == [f"curiosity, session {sid}: read turns 6-10 of 10; raise context_tokens to read all"]
@@ -322,7 +335,7 @@ def test_curiosity_12_a_session_too_long_is_read_in_part_said_once_and_marked_re
 def test_curiosity_13_turns_are_never_stitched_together_past_one_that_doesnt_fit(make_agent):
     seen = []
     agent = make_agent(fn=scripted([], lambda prompt: seen.append(sorted(agent_turns(prompt))) or '{"questions": []}'),
-                       context_tokens=600)
+                       context_tokens=2000)
     sid, ids = add_session(agent.store, [("user", "a"), ("agent", "why do rats sleep by day?"), ("user", "b"),
                                          ("agent", "word " * 2000), ("user", "c"), ("agent", "why is the sky blue?")])
     agent.end_session()
@@ -336,7 +349,7 @@ def test_curiosity_14_a_question_may_cite_only_a_turn_that_was_read(make_agent):
         return json.dumps({"questions": [
             {"text": "Why do rats sleep by day?", "quote": "why do rats sleep", "turn": ids[1]},      # skipped
             {"text": "Why is the sky blue?", "quote": "why is the sky", "turn": ids[5]}]})           # read
-    agent = make_agent(fn=scripted([], reader), context_tokens=600)
+    agent = make_agent(fn=scripted([], reader), context_tokens=2000)
     _, ids = add_session(agent.store, [("user", "a"), ("agent", "why do rats sleep by day?"), ("user", "b"),
                                        ("agent", "word " * 2000), ("user", "c"), ("agent", "why is the sky blue?")])
     agent.end_session()
@@ -357,16 +370,58 @@ def test_curiosity_15_a_session_that_fits_is_read_whole_with_no_note(make_agent)
 def test_curiosity_16_a_session_that_fits_whole_is_read_whole_though_its_turns_priced_one_by_one_dont(make_agent):
     """The round-5 verifier's M31: pricing turn by turn errs high (each turn's estimate rounds up), so a session
     that fits as one prompt is read whole, by the whole-prompt check, with no note."""
-    from starter_agent.models import estimate_tokens, prompt_size
-    from starter_agent.recall import turn_line
+    from starter_agent.models import prompt_size
     seen = []
     agent = make_agent(fn=scripted([], lambda prompt: seen.append(sorted(agent_turns(prompt))) or '{"questions": []}'))
     sid, _ = add_session(agent.store, [("user", "go"), ("agent", "a")] * 40)
     mine = [t for t in agent.store.turns(sid) if t["role"] == "agent"]
-    context = prompt_size(curiosity.prompt(mine)) * 5 // 4                     # the whole prompt just fits
-    priced = estimate_tokens(curiosity.SYSTEM) + sum(estimate_tokens(turn_line(t) + "\n") for t in mine)
-    assert priced * 5 // 4 > context                                            # the fixture: one by one, they don't
+    context = window_for(prompt_size(curiosity.prompt(mine)))
+    assert curiosity.share(context) == prompt_size(curiosity.prompt(mine))      # the whole prompt just fits
+    assert priced(mine) > curiosity.share(context)                              # the fixture: one by one, they don't
     assert curiosity.newest_that_fit(mine, context) == mine
     agent.config.context_tokens = context
     agent.end_session()
     assert seen == [[t["id"] for t in mine]] and agent.notes == [] and part_rows(agent.store) == []
+
+
+# --- Round 8: an answer cut off never marks its session read (r7 verifier's MEDIUM; CC's call) --------------------
+#     It stopped at its length limit, or its reply has no list of questions (cut part way, or not JSON): the session
+#     stays unread, the cut is logged, you're told, and the next session end reads it again with fewer turns.
+
+def test_curiosity_17_a_reply_with_no_list_leaves_the_session_unread_and_loses_no_question(make_agent):
+    replies = iter(['{"questions": [{"text": "Why is the sky', None])
+
+    def reader(prompt):
+        reply = next(replies)
+        return reply or json.dumps({"questions": [{"text": "Why is the sky blue?", "quote": "why is the sky blue",
+                                                   "turn": max(agent_turns(prompt))}]})
+    agent = make_agent(fn=scripted([], reader))
+    sid, ids = add_session(agent.store, [("user", "a"), ("agent", "word " * 200), ("user", "b"),
+                                         ("agent", "why is the sky blue?")])
+    agent.end_session()
+    assert [s["id"] for s in agent.store.unread_sessions()] == [sid] and curiosity.open_questions(agent.store) == []
+    assert agent.notes == [f"curiosity, session {sid}: the answer was cut off (its reply had no list of questions), so "
+                           "the session stays unread; the next session end reads it again, fewer turns at a time "
+                           "(see: log)"]
+    agent.end_session()
+    assert agent.store.unread_sessions() == []
+    assert [q["source_turn"] for q in curiosity.open_questions(agent.store)] == [ids[3]]      # no question lost
+    assert [sorted(agent_turns(call[-1]["content"])) for call in agent.model.calls] == [[ids[1], ids[3]], [ids[3]]]
+
+
+def test_curiosity_18_answers_cut_off_every_time_end_in_a_read_of_no_turns_said_and_marked_read(make_agent):
+    """Each read after a cut takes at most half as much, so it ends: once not even the newest turn fits, the session
+    is marked read with no turn read, logged and said like a part read."""
+    agent = make_agent(fn=scripted([], lambda prompt: '{"questions": [{"text": "Why'), context_tokens=4096)
+    sid, mine = long_session(agent.store)                    # ten agent turns of ~100 tokens: read whole at first
+    for _ in range(10):
+        if agent.store.unread_sessions():
+            agent.end_session()
+    reads = [sorted(agent_turns(call[-1]["content"])) for call in agent.model.calls]
+    assert agent.store.unread_sessions() == [] and 2 <= len(reads) <= 6, reads
+    assert reads[0] == [t["id"] for t in mine]
+    assert all(0 < len(b) < len(a) and b == a[-len(b):] for a, b in zip(reads, reads[1:])), reads   # newest, fewer
+    cuts = agent.store.db.execute("SELECT COUNT(*) FROM log WHERE kind='curiosity cut'").fetchone()[0]
+    assert cuts == len(reads) and part_rows(agent.store)[-1][2] == {"of": 10, "read": None, "skipped": [1, 10]}
+    assert agent.notes[-1] == (f"curiosity, session {sid}: read no turns of 10 (its answers were cut off, and a smaller "
+                               "read holds none of its turns); raise context_tokens to read all")

@@ -18,7 +18,7 @@ The licence's AI-welfare terms are written for persistent agents. As shipped, Ki
 delete` is you removing your own data. If you grow it into a long-running agent, read those terms first: they're
 part of what you're building toward.
 
-It's deliberately small (about 2,000 lines of Python, standard library only) so you can read all of it in
+It's deliberately small (about 2,200 lines of Python, standard library only) so you can read all of it in
 an afternoon and change any of it.
 
 ## The loop
@@ -250,6 +250,7 @@ answer 16,000, less than a quarter. Anthropic's limit is a fixed 16,000 whatever
 servers get no limit from Kindling (below). Recall gets what the rest of the prompt (this session, the
 beliefs, the intention, the instructions) leaves of that. In a
 4,096-token window, recall fills the prompt to at most 2,457 tokens, leaving the answer at least 1,024.
+Curiosity's prompt takes the same share, so its answer keeps the same room: it reads fewer turns at once.
 With under about 1,000 tokens left, recall is skipped and you're told; past that, a longer session leaves
 the answer less, until the length check refuses the prompt.
 Tokens are estimated without a tokenizer: four characters a token for words, half a token for each
@@ -322,9 +323,12 @@ In this order: `agent.py` (the loop, about 170 lines), `recall.py`, `bdi.py`, `c
   confidence from 0 to 1; otherwise it's dropped and logged (`log`).
 - **Curiosity** runs once when a session ends: one model call reads the agent's own turns and lists the
   questions it raised and didn't answer. If that call fails, the session stays unread and the next session
-  end tries again. A session too long to read in one call is read in part (Lyra's rule): its newest agent
-  turns that fit, as one block, never turns stitched together from different places. The log records the
-  turns read and skipped, you're told once ("read turns k-n of m; raise context_tokens to read all", or
+  end tries again. So does an answer that was cut off (it stopped at its length limit, or its reply has no
+  list of questions): the cut is logged, you're told, and the next session end reads the session again with
+  fewer turns, so its questions aren't lost; once not even one turn fits that smaller read, the session
+  counts as read, and you're told. A session too long to read in one call is read in part (Lyra's rule):
+  its newest agent turns that fit, as one block, never turns stitched together from different places. The
+  log records the turns read and skipped, you're told once ("read turns k-n of m; raise context_tokens to read all", or
   "start the server with a bigger window" where the server reported its window), and the session counts as
   read, so nothing repeats. Each question must quote 2 to 20 of the agent's words
   exactly, from a turn that was read, or it's dropped: the quote shows where in the agent's words it came
