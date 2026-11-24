@@ -310,7 +310,7 @@ def part_rows(store):
 
 
 def test_curiosity_12_a_session_too_long_is_read_in_part_said_once_and_marked_read(make_agent):
-    from starter_agent.models import PromptTooLong, check_fits
+    from starter_agent.models import prompt_size
     seen = []
     agent = make_agent(fn=scripted([], lambda prompt: seen.append(sorted(agent_turns(prompt))) or '{"questions": []}'))
     sid, mine = long_session(agent.store)
@@ -318,7 +318,7 @@ def test_curiosity_12_a_session_too_long_is_read_in_part_said_once_and_marked_re
     ids = [t["id"] for t in mine]
     room = curiosity.share(agent.config.context_tokens)
     assert priced(mine[5:]) <= room < priced(mine[4:])                    # the fixture: five fit, six don't,
-    assert check_fits(curiosity.prompt(mine), agent.config.context_tokens) is None    # though all ten pass check_fits
+    assert prompt_size(curiosity.prompt(mine)) * 5 // 4 <= agent.config.context_tokens   # though all ten pass check_fits
     assert agent.end_session() == []
     assert seen == [ids[5:]]                                    # the newest five, as one block
     assert agent.notes == [f"curiosity, session {sid}: read turns 6-10 of 10; raise context_tokens to read all"]

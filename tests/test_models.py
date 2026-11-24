@@ -1250,12 +1250,13 @@ def cut_rows(store):
 
 
 @pytest.mark.parametrize("length", [0.7, 1.5], ids=["over the share", "longer than the window"])
-@pytest.mark.parametrize("window", [4096, 12288, 32768])
+@pytest.mark.parametrize("window", [4096, 12288, 32768, 3000])
 @pytest.mark.parametrize("server", ["ollama", "llama.cpp"])
 def test_curiositys_answer_keeps_a_quarter_of_the_window_with_a_long_session(wire, tmp_path, server, window, length):
     """The r7 verifier's MEDIUM: curiosity filled its prompt to the length check's edge, so its answer's limit
     (answer_room) came to a median of ~260 tokens at any window, sometimes under 30, and a cut answer lost that
-    session's questions. Its prompt now takes recall's share, so its answer keeps a quarter of the window."""
+    session's questions. Its prompt now takes recall's share, so its answer keeps a quarter of the window, and at
+    least 1,024 tokens (3,000: where the floor, not the quarter, sets it)."""
     agent = agent_on(wire, tmp_path, server, window)
     wire.reply = finished(server, '{"questions": []}')
     day(agent.store, window, length)
