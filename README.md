@@ -175,7 +175,7 @@ With Ollama at its usual address on this computer (`http://localhost:11434`) not
 and a local address never goes through a proxy set in your environment. A `base_url` on another machine,
 or an Ollama cloud model, sends everything there. With an API key, each turn sends the recalled sessions,
 the current beliefs, the current intention and this session to that provider, and curiosity sends the
-agent's own turns once when a session ends. With bge-small, set `HF_HUB_OFFLINE=1` after its first download
+agent's own turns when a session ends (the newest of them again at the next end, if its answer was cut off). With bge-small, set `HF_HUB_OFFLINE=1` after its first download
 so it doesn't check huggingface.co at each start (no session text goes there). If this folder sits in a
 cloud-synced place (OneDrive, iCloud), `memory/agent.db` is uploaded with it.
 
@@ -325,8 +325,9 @@ In this order: `agent.py` (the loop, about 170 lines), `recall.py`, `bdi.py`, `c
   questions it raised and didn't answer. If that call fails, the session stays unread and the next session
   end tries again. So does an answer that was cut off (it stopped at its length limit, or its reply has no
   list of questions): the cut is logged, you're told, and the next session end reads the session again with
-  fewer turns, so its questions aren't lost; once not even one turn fits that smaller read, the session
-  counts as read, and you're told. A session too long to read in one call is read in part (Lyra's rule):
+  fewer turns, so a shorter read can still find its questions. If the newest turn alone is too long for that
+  smaller read (a session of one long turn, say), the session counts as read and its questions are lost, and
+  you're told. A session too long to read in one call is read in part (Lyra's rule):
   its newest agent turns that fit, as one block, never turns stitched together from different places. The
   log records the turns read and skipped, you're told once ("read turns k-n of m; raise context_tokens to read all", or
   "start the server with a bigger window" where the server reported its window), and the session counts as
